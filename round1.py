@@ -62,6 +62,31 @@ class Trader:
         if len(self.timeframe_data[product]['prices']) > 500:
             self.timeframe_data[product]['prices'].pop(0)
 
+    def clear_position_order(self, orders: List[Order], order_depth: OrderDepth, position: int, position_limit: int, product: str, buy_order_volume: int, sell_order_volume: int, fair_value: float, width: int) -> tuple:
+        # Keeping your original implementation
+        position_after_take = position + buy_order_volume - sell_order_volume
+        fair = round(fair_value)
+        fair_for_bid = math.floor(fair_value)
+        fair_for_ask = math.ceil(fair_value)
+
+        buy_quantity = position_limit - (position + buy_order_volume)
+        sell_quantity = position_limit + (position - sell_order_volume)
+        if position_after_take > 0:
+            if fair_for_ask in order_depth.buy_orders.keys():
+                clear_quantity = min(order_depth.buy_orders[fair_for_ask], position_after_take)
+                sent_quantity = min(sell_quantity, clear_quantity)
+                orders.append(Order(product, fair_for_ask, -abs(sent_quantity)))
+                sell_order_volume += abs(sent_quantity)
+
+        if position_after_take < 0:
+            if fair_for_bid in order_depth.sell_orders.keys():
+                clear_quantity = min(abs(order_depth.sell_orders[fair_for_bid]), abs(position_after_take))
+                sent_quantity = min(buy_quantity, clear_quantity)
+                orders.append(Order(product, fair_for_bid, abs(sent_quantity)))
+                buy_order_volume += abs(sent_quantity)
+    
+        return buy_order_volume, sell_order_volume
+
     def kelp_mean_reversion_strategy(self, order_depth: OrderDepth, state: TradingState) -> List[Order]:
         orders: List[Order] = []
         position = state.position.get("KELP", 0)
@@ -142,75 +167,47 @@ class Trader:
 
         return orders
 
-    def resin_orders(self, order_depth: OrderDepth, fair_value: int, width: int, position: int, position_limit: int) -> List[Order]:
-        # Keeping your original resin implementation
-        orders: List[Order] = []
+    def resin_orders(self, order_depth: OrderDepth, state: TradingState) -> List[Order]:
+        orders = []
+        product = "RAINFOREST_RESIN"
+        position = state.position.get(product, 0)
+        position_limit = 50
+        # TO DO: implemenmt resin strategy
         return orders
     
-    def clear_position_order(self, orders: List[Order], order_depth: OrderDepth, position: int, position_limit: int, product: str, buy_order_volume: int, sell_order_volume: int, fair_value: float, width: int) -> tuple:
-        # Keeping your original implementation
-        position_after_take = position + buy_order_volume - sell_order_volume
-        fair = round(fair_value)
-        fair_for_bid = math.floor(fair_value)
-        fair_for_ask = math.ceil(fair_value)
-
-        buy_quantity = position_limit - (position + buy_order_volume)
-        sell_quantity = position_limit + (position - sell_order_volume)
-
-        if position_after_take > 0:
-            if fair_for_ask in order_depth.buy_orders.keys():
-                clear_quantity = min(order_depth.buy_orders[fair_for_ask], position_after_take)
-                sent_quantity = min(sell_quantity, clear_quantity)
-                orders.append(Order(product, fair_for_ask, -abs(sent_quantity)))
-                sell_order_volume += abs(sent_quantity)
-
-        if position_after_take < 0:
-            if fair_for_bid in order_depth.sell_orders.keys():
-                clear_quantity = min(abs(order_depth.sell_orders[fair_for_bid]), abs(position_after_take))
-                sent_quantity = min(buy_quantity, clear_quantity)
-                orders.append(Order(product, fair_for_bid, abs(sent_quantity)))
-                buy_order_volume += abs(sent_quantity)
-    
-        return buy_order_volume, sell_order_volume
+    def squidink_orders(self, order_depth: OrderDepth, state: TradingState) -> List[Order]:
+        orders = []
+        product = "SQUID_INK"
+        position = state.position.get(product, 0)
+        position_limit = 50
+        # TO DO: implemenmt resin strategy
+        return orders   
 
     def run(self, state: TradingState):
         result = {}
-
-        # Initialize trader data if available
-        if state.traderData:
-            try:
-                trader_data = jsonpickle.decode(state.traderData)
-                self.kelp_price_history = trader_data.get("kelp_price_history", self.kelp_price_history)
-                self.ewma_mean = trader_data.get("ewma_mean", self.ewma_mean)
-                self.ewma_var = trader_data.get("ewma_var", self.ewma_var)
-                self.kelp_last_prices = trader_data.get("kelp_last_prices", self.kelp_last_prices)
-                self.timeframe_data = trader_data.get("timeframe_data", self.timeframe_data)
-            except:
-                # Handle case where traderData isn't valid
-                pass
+        trader_data = jsonpickle.decode(state.traderData)
 
         # Handle RAINFOREST_RESIN
-        if "RAINFOREST_RESIN" in state.order_depths:
-            resin_position = state.position.get("RAINFOREST_RESIN", 0)
-            resin_orders = self.resin_orders(
-                state.order_depths["RAINFOREST_RESIN"], 
-                self.resin_fair_value, 
-                2,  # width
-                resin_position, 
-                20  # position limit
-            )
-            result["RAINFOREST_RESIN"] = resin_orders
-
-        # Handle KELP with mean reversion strategy
-        if "KELP" in state.order_depths:
-            kelp_position = state.position.get("KELP", 0)
-            kelp_orders = self.kelp_mean_reversion_strategy(state.order_depths["KELP"], state)
-            result["KELP"] = kelp_orders
+        # if "RAINFOREST_RESIN" in state.order_depths:
+        #     resin_position = state.position.get("RAINFOREST_RESIN", 0)
+        #     resin_orders = self.resin_orders(state.order_depths["RAINFOREST_RESIN"], state)
+        #     result["RAINFOREST_RESIN"] = resin_orders
 
         # Handle SQUID_INK if needed
         # if "SQUID_INK" in state.order_depths:
-        #     # Add SQUID_INK strategy here
-        #     pass
+        #     squid_orders = self.squidink_orders(state.order_depths["SQUID_INK"], state)
+        #     result["SQUID_INK"] = squid_orders
+
+        # Handle KELP with mean reversion strategy
+        self.kelp_price_history = trader_data.get("kelp_price_history", self.kelp_price_history)
+        self.ewma_mean = trader_data.get("ewma_mean", self.ewma_mean)
+        self.ewma_var = trader_data.get("ewma_var", self.ewma_var)
+        self.kelp_last_prices = trader_data.get("kelp_last_prices", self.kelp_last_prices)
+        self.timeframe_data = trader_data.get("timeframe_data", self.timeframe_data)
+        if "KELP" in state.order_depths:
+            kelp_position = state.position.get("KELP", 0)
+            kelp_orders = self.kelp_mean_reversion_strategy(state.order_depths["KELP"], state)
+            result["KELP"] = kelp_orders     
 
         # Save state for next iteration
         trader_data = {

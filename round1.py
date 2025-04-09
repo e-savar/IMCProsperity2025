@@ -1,32 +1,36 @@
-from datamodel import OrderDepth, UserId, TradingState, Order
+from datamodel import Listing, Observation, Order, OrderDepth, ProsperityEncoder, Symbol, Trade, TradingState
 from typing import List, Dict, Any
 import string
 import jsonpickle
 import numpy as np
 import math
 import json
-from typing import Any
-
-from datamodel import Listing, Observation, Order, OrderDepth, ProsperityEncoder, Symbol, Trade, TradingState
-
 
 class Trader:
     def __init__(self):
         # KELP mean reversion parameters
         self.kelp_price_history = []
-        self.lookback_window = 100  # Store last 100 timestamps (adjust based on your data)
-        self.min_history_length = 20  # Minimum data points before trading
-        self.z_threshold = 1.5  # Signal threshold (how many std deviations)
-        self.ewma_alpha = 0.1  # Weight for exponential moving average
-        self.ewma_mean = None  # Exponential weighted moving average
-        self.ewma_var = None   # Exponential weighted variance
-        self.bollinger_width = 2.0  # Width of Bollinger Bands
-        self.kelp_last_prices = []  # Track recent prices for momentum
-        self.momentum_window = 5    # Window for momentum calculation
-        
-        # RESIN parameters (keeping basic implementation)
+        self.lookback_window_kelp = 100
+        self.min_history_length_kelp = 20
+        self.z_threshold_kelp = 1.5
+        self.ewma_alpha_kelp = 0.1
+        self.ewma_mean_kelp = None
+        self.ewma_var_kelp = None
+        self.bollinger_width_kelp = 2.0
+        self.kelp_last_prices = []
+        self.momentum_window_kelp = 5
+        self.momentum_weight_kelp = 0.3
+
+        # RESIN parameters
         self.resin_fair_value = 10000
-        
+
+        # SQUID_INK Z-score strategy parameters
+        self.squid_prices = []
+        self.squid_window = 10
+        self.squid_upper_z = 0.8
+        self.squid_lower_z = -0.8
+        self.squid_position_limit = 20
+
         # Conversion tracking
         self.prev_timestamp = None
         self.timeframe_data = {}
@@ -37,38 +41,30 @@ class Trader:
         variance = sum((x - mean) ** 2 for x in data) / (len(data) - 1)
         return math.sqrt(variance)
 
-    def update_ewma(self, price):
-        if self.ewma_mean is None:
-            self.ewma_mean = price
-            self.ewma_var = 0
-            return
-        
-        # EWMA mean
-        delta = price - self.ewma_mean
-        self.ewma_mean += self.ewma_alpha * delta
-        
-        # EWMA variance
-        self.ewma_var = (1 - self.ewma_alpha) * (self.ewma_var + self.ewma_alpha * delta * delta)
-    
+    def update_ewma(self, price, current_mean, current_var, alpha):
+        if current_mean is None:
+            return price, 0
+        delta = price - current_mean
+        new_mean = current_mean + alpha * delta
+        new_var = (1 - alpha) * (current_var + alpha * delta * delta)
+        return new_mean, new_var
+
     def update_timeframe_data(self, timestamp, mid_price, product):
         if self.prev_timestamp is None:
             self.prev_timestamp = timestamp
-        
+
         if product not in self.timeframe_data:
             self.timeframe_data[product] = {'prices': [], 'volumes': []}
-        
+
         self.timeframe_data[product]['prices'].append(mid_price)
-        
-        # only recent data
+
         if len(self.timeframe_data[product]['prices']) > 500:
             self.timeframe_data[product]['prices'].pop(0)
 
-    def clear_position_order(self, orders: List[Order], order_depth: OrderDepth, position: int, 
-                             position_limit: int, product: str, buy_order_volume: int, 
+    def clear_position_order(self, orders: List[Order], order_depth: OrderDepth, position: int,
+                             position_limit: int, product: str, buy_order_volume: int,
                              sell_order_volume: int, fair_value: float, width: int) -> tuple:
-        # Keeping your original implementation
         position_after_take = position + buy_order_volume - sell_order_volume
-        fair = round(fair_value)
         fair_for_bid = math.floor(fair_value)
         fair_for_ask = math.ceil(fair_value)
 
@@ -87,9 +83,9 @@ class Trader:
                 sent_quantity = min(buy_quantity, clear_quantity)
                 orders.append(Order(product, fair_for_bid, abs(sent_quantity)))
                 buy_order_volume += abs(sent_quantity)
-    
-        return buy_order_volume, sell_order_volume
 
+        return buy_order_volume, sell_order_volume
+    
     def kelp_mean_reversion_strategy(self, order_depth: OrderDepth, state: TradingState) -> List[Order]:
         orders: List[Order] = []
         position = state.position.get("KELP", 0)
@@ -105,38 +101,38 @@ class Trader:
         mid_price = (best_ask + best_bid) / 2
 
         self.kelp_price_history.append(mid_price)
-        if len(self.kelp_price_history) > self.lookback_window:
+        if len(self.kelp_price_history) > self.lookback_window_kelp:
             self.kelp_price_history.pop(0)
 
-        self.update_ewma(mid_price)
+        self.ewma_mean_kelp, self.ewma_var_kelp = self.update_ewma(
+            mid_price, self.ewma_mean_kelp, self.ewma_var_kelp, self.ewma_alpha_kelp
+        )
         self.kelp_last_prices.append(mid_price)
-        if len(self.kelp_last_prices) > self.momentum_window:
+        if len(self.kelp_last_prices) > self.momentum_window_kelp:
             self.kelp_last_prices.pop(0)
 
         if hasattr(state, 'timestamp'):
             self.update_timeframe_data(state.timestamp, mid_price, "KELP")
 
-        if len(self.kelp_price_history) < self.min_history_length:
+        if len(self.kelp_price_history) < self.min_history_length_kelp:
             return orders
 
         simple_mean = sum(self.kelp_price_history) / len(self.kelp_price_history)
         std_dev = self.calculate_std_dev(self.kelp_price_history, simple_mean)
-        mean_price = self.ewma_mean if self.ewma_mean else simple_mean
-        ewma_std_dev = math.sqrt(self.ewma_var) if self.ewma_var > 0 else std_dev
+        mean_price = self.ewma_mean_kelp if self.ewma_mean_kelp else simple_mean
+        ewma_std_dev = math.sqrt(self.ewma_var_kelp) if self.ewma_var_kelp is not None and self.ewma_var_kelp > 0 else std_dev
 
-        upper_band = mean_price + self.bollinger_width * ewma_std_dev
-        lower_band = mean_price - self.bollinger_width * ewma_std_dev
+        upper_band = mean_price + self.bollinger_width_kelp * ewma_std_dev
+        lower_band = mean_price - self.bollinger_width_kelp * ewma_std_dev
         z_score = (mid_price - mean_price) / ewma_std_dev if ewma_std_dev > 0 else 0
-        momentum = self.kelp_last_prices[-1] - self.kelp_last_prices[0] if len(self.kelp_last_prices) >= 3 else 0
-        adjusted_z = z_score + 0.3 * (momentum / ewma_std_dev if ewma_std_dev > 0 else 0)
+        momentum = self.kelp_last_prices[-1] - self.kelp_last_prices[0] if len(self.kelp_last_prices) >= 2 else 0
+        adjusted_z = z_score + self.momentum_weight_kelp * (momentum / ewma_std_dev if ewma_std_dev > 0 else 0)
 
-        # Dynamic position sizing using scaled sigmoid
-        position_bias = int(position_limit * (math.tanh(adjusted_z / self.z_threshold)))
+        position_bias = int(position_limit * (math.tanh(adjusted_z / self.z_threshold_kelp)))
         target_position = max(-position_limit, min(position_limit, -position_bias))
 
         position_diff = target_position - (position + buy_order_volume - sell_order_volume)
 
-        # Take advantage of mispriced asks
         if mid_price < lower_band:
             for ask_price in sorted(order_depth.sell_orders.keys()):
                 if ask_price < mean_price:
@@ -146,7 +142,6 @@ class Trader:
                         orders.append(Order("KELP", ask_price, qty))
                         buy_order_volume += qty
 
-        # Take advantage of mispriced bids
         if mid_price > upper_band:
             for bid_price in sorted(order_depth.buy_orders.keys(), reverse=True):
                 if bid_price > mean_price:
@@ -156,7 +151,6 @@ class Trader:
                         orders.append(Order("KELP", bid_price, -qty))
                         sell_order_volume += qty
 
-        # Execution for any remaining imbalance toward target
         if position_diff > 0:
             buy_price = best_bid + 1
             qty = min(position_diff, position_limit - position - buy_order_volume)
@@ -177,34 +171,30 @@ class Trader:
         position_limit = 50
         position = state.position.get("RAINFOREST_RESIN", 0)
         fair_value = self.resin_fair_value
-        
-        # Find prices above and below fair value
+
         try:
             baaf = min([price for price in order_depth.sell_orders.keys() if price > fair_value + 1])
             bbbf = max([price for price in order_depth.buy_orders.keys() if price < fair_value - 1])
         except ValueError:
-            # Handle case when the price lists might be empty
             if order_depth.sell_orders:
                 baaf = min(order_depth.sell_orders.keys())
             else:
                 baaf = fair_value + width
-            
+
             if order_depth.buy_orders:
                 bbbf = max(order_depth.buy_orders.keys())
             else:
                 bbbf = fair_value - width
-        
-        # Buy if price is below fair value
+
         if len(order_depth.sell_orders) != 0:
             best_ask = min(order_depth.sell_orders.keys())
             best_ask_amount = -1 * order_depth.sell_orders[best_ask]
             if best_ask < fair_value:
                 quantity = min(best_ask_amount, position_limit - position)
                 if quantity > 0:
-                    orders.append(Order("RAINFOREST_RESIN", best_ask, quantity)) 
+                    orders.append(Order("RAINFOREST_RESIN", best_ask, quantity))
                     buy_order_volume += quantity
 
-        # Sell if price is above fair value
         if len(order_depth.buy_orders) != 0:
             best_bid = max(order_depth.buy_orders.keys())
             best_bid_amount = order_depth.buy_orders[best_bid]
@@ -213,14 +203,12 @@ class Trader:
                 if quantity > 0:
                     orders.append(Order("RAINFOREST_RESIN", best_bid, -1 * quantity))
                     sell_order_volume += quantity
-        
-        # Clear position orders
+
         buy_order_volume, sell_order_volume = self.clear_position_order(
-            orders, order_depth, position, position_limit, 
+            orders, order_depth, position, position_limit,
             "RAINFOREST_RESIN", buy_order_volume, sell_order_volume, fair_value, 1
         )
 
-        # Place limit orders
         buy_quantity = position_limit - (position + buy_order_volume)
         if buy_quantity > 0:
             orders.append(Order("RAINFOREST_RESIN", bbbf + 1, buy_quantity))
@@ -230,59 +218,100 @@ class Trader:
             orders.append(Order("RAINFOREST_RESIN", baaf - 1, -sell_quantity))
 
         return orders
-    
+
+    def calculate_moving_average(self, data, window):
+        if len(data) < window:
+            return None
+        return sum(data[-window:]) / window
+
+    def calculate_trend(self, price_history, short_window, long_window):
+        if len(price_history) < long_window:
+            return 0  # Not enough data to determine trend
+
+        short_ma = self.calculate_moving_average(price_history, short_window)
+        long_ma = self.calculate_moving_average(price_history, long_window)
+
+        if short_ma is None or long_ma is None or long_ma == 0:
+            return 0
+
+        # Calculate percentage difference
+        trend = (short_ma - long_ma) / long_ma
+        return trend
+
     def squidink_orders(self, order_depth: OrderDepth, state: TradingState) -> List[Order]:
         orders = []
         product = "SQUID_INK"
         position = state.position.get(product, 0)
-        position_limit = 50
-        # TO DO: implement squid ink strategy
-        return orders   
+        position_limit = self.squid_position_limit
+
+        if not order_depth.buy_orders or not order_depth.sell_orders:
+            return orders
+
+        best_bid = max(order_depth.buy_orders.keys())
+        best_ask = min(order_depth.sell_orders.keys())
+
+        if best_bid is None or best_ask is None:
+            return orders
+
+        mid_price = (best_bid + best_ask) / 2
+        self.squid_prices.append(mid_price)
+
+        if len(self.squid_prices) > self.squid_window:
+            self.squid_prices.pop(0)
+
+        if len(self.squid_prices) < self.squid_window:
+            return orders
+
+        mean = np.mean(self.squid_prices)
+        std = np.std(self.squid_prices) + 1e-9
+        z_score = (mid_price - mean) / std
+
+        # Short Signal
+        if z_score > self.squid_upper_z:
+            volume = min(order_depth.buy_orders.get(best_bid, 0), position_limit - position)
+            if volume > 0:
+                orders.append(Order(product, best_bid, -volume))
+
+        # Long Signal
+        elif z_score < self.squid_lower_z:
+            volume = min(order_depth.sell_orders.get(best_ask, 0), position_limit + position)
+            if volume > 0:
+                orders.append(Order(product, best_ask, volume))
+
+        return orders
 
     def run(self, state: TradingState):
         result = {}
-        
-        # Initialize trader_data from state or use empty dict if None
+
         trader_data = {}
         if state.traderData:
             try:
                 trader_data = jsonpickle.decode(state.traderData)
             except Exception:
                 trader_data = {}
-        
-        # Load saved state data
+
         if trader_data:
             self.kelp_price_history = trader_data.get("kelp_price_history", self.kelp_price_history)
-            self.ewma_mean = trader_data.get("ewma_mean", self.ewma_mean)
-            self.ewma_var = trader_data.get("ewma_var", self.ewma_var)
+            self.ewma_mean_kelp = trader_data.get("ewma_mean_kelp", self.ewma_mean_kelp)
+            self.ewma_var_kelp = trader_data.get("ewma_var_kelp", self.ewma_var_kelp)
             self.kelp_last_prices = trader_data.get("kelp_last_prices", self.kelp_last_prices)
             self.timeframe_data = trader_data.get("timeframe_data", self.timeframe_data)
 
-        # Handle RAINFOREST_RESIN
         if "RAINFOREST_RESIN" in state.order_depths:
-            resin_orders = self.resin_orders(state.order_depths["RAINFOREST_RESIN"], 2, state)
-            result["RAINFOREST_RESIN"] = resin_orders
+            result["RAINFOREST_RESIN"] = self.resin_orders(state.order_depths["RAINFOREST_RESIN"], 2, state)
 
-        # Handle KELP
         if "KELP" in state.order_depths:
-            kelp_orders = self.kelp_mean_reversion_strategy(state.order_depths["KELP"], state)
-            result["KELP"] = kelp_orders 
+            result["KELP"] = self.kelp_mean_reversion_strategy(state.order_depths["KELP"], state)
 
-        # Handle SQUID_INK if needed
-        # if "SQUID_INK" in state.order_depths:
-        #     squid_orders = self.squidink_orders(state.order_depths["SQUID_INK"], state)
-        #     result["SQUID_INK"] = squid_orders
-            
-            
+        if "SQUID_INK" in state.order_depths:
+            result["SQUID_INK"] = self.squidink_orders(state.order_depths["SQUID_INK"], state)
 
-        # Save state for next iteration
         trader_data = {
             "kelp_price_history": self.kelp_price_history,
-            "ewma_mean": self.ewma_mean,
-            "ewma_var": self.ewma_var,
+            "ewma_mean_kelp": self.ewma_mean_kelp,
+            "ewma_var_kelp": self.ewma_var_kelp,
             "kelp_last_prices": self.kelp_last_prices,
             "timeframe_data": self.timeframe_data
         }
-        
-        # Return results, conversions, and trader data
+
         return result, 0, jsonpickle.encode(trader_data)

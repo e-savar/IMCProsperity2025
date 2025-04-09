@@ -218,6 +218,73 @@ class Trader:
             orders.append(Order("RAINFOREST_RESIN", baaf - 1, -sell_quantity))
 
         return orders
+    def resin_band_strategy(self, order_depth: OrderDepth, width: int, state: TradingState) -> List[Order]:
+        orders: List[Order] = []
+        buy_order_volume = 0
+        sell_order_volume = 0
+        position_limit = 50
+        product = "RAINFOREST_RESIN"
+        position = state.position.get(product, 0)
+        fair_value = self.resin_fair_value
+        order_depth = state.order_depths[product]
+
+        # Find best "aggressive" resting opportunities
+        try:
+            baaf = min([p for p in order_depth.sell_orders if p > fair_value + 1])
+            bbbf = max([p for p in order_depth.buy_orders if p < fair_value - 1])
+        except ValueError:
+            baaf = min(order_depth.sell_orders.keys(), default=fair_value + 3)
+            bbbf = max(order_depth.buy_orders.keys(), default=fair_value - 3)
+
+        # --- AGGRESSIVE EXECUTION ON CLEAR MISPRICING ---
+        if order_depth.sell_orders:
+            best_ask = min(order_depth.sell_orders.keys())
+            best_ask_volume = -order_depth.sell_orders[best_ask]
+
+            if best_ask < fair_value:
+                distance = fair_value - best_ask
+                multiplier = 1 + int(distance)  # e.g. 1 at FV-1, 2 at FV-2, etc.
+                qty = min(multiplier * best_ask_volume, position_limit - position)
+                if qty > 0:
+                    orders.append(Order(product, best_ask, qty))
+                    buy_order_volume += qty
+
+        if order_depth.buy_orders:
+            best_bid = max(order_depth.buy_orders.keys())
+            best_bid_volume = order_depth.buy_orders[best_bid]
+
+            if best_bid > fair_value:
+                distance = best_bid - fair_value
+                multiplier = 1 + int(distance)
+                qty = min(multiplier * best_bid_volume, position_limit + position)
+                if qty > 0:
+                    orders.append(Order(product, best_bid, -qty))
+                    sell_order_volume += qty
+
+        # --- POSITION MANAGEMENT: flatten strong positions if price allows ---
+        buy_order_volume, sell_order_volume = self.clear_position_order(
+            orders, order_depth, position, position_limit,
+            product, buy_order_volume, sell_order_volume, fair_value, 1
+        )
+
+        # --- PASSIVE SPREAD CAPTURE (Smart Posting) ---
+        spread = baaf - bbbf if baaf and bbbf else 5
+        # Only post passives if spread is wide enough to justify
+        if spread >= 2:
+
+            buy_qty = position_limit - (position + buy_order_volume)
+            if buy_qty > 0:
+                price = bbbf + 1  # Closer to mid, increase fill chance
+                orders.append(Order(product, price, buy_qty))
+
+            sell_qty = position_limit + (position - sell_order_volume)
+            if sell_qty > 0:
+                price = baaf - 1
+                orders.append(Order(product, price, -sell_qty))
+
+        return orders
+
+
 
     def calculate_moving_average(self, data, window):
         if len(data) < window:
@@ -298,13 +365,14 @@ class Trader:
             self.timeframe_data = trader_data.get("timeframe_data", self.timeframe_data)
 
         if "RAINFOREST_RESIN" in state.order_depths:
-            result["RAINFOREST_RESIN"] = self.resin_orders(state.order_depths["RAINFOREST_RESIN"], 2, state)
+            # result["RAINFOREST_RESIN"] = self.resin_orders(state.order_depths["RAINFOREST_RESIN"], 2, state)
+            result["RAINFOREST_RESIN"] = self.resin_band_strategy(state.order_depths["RAINFOREST_RESIN"], 2, state)
 
-        if "KELP" in state.order_depths:
-            result["KELP"] = self.kelp_mean_reversion_strategy(state.order_depths["KELP"], state)
+        # if "KELP" in state.order_depths:
+        #     result["KELP"] = self.kelp_mean_reversion_strategy(state.order_depths["KELP"], state)
 
-        if "SQUID_INK" in state.order_depths:
-            result["SQUID_INK"] = self.squidink_orders(state.order_depths["SQUID_INK"], state)
+        # if "SQUID_INK" in state.order_depths:
+        #     result["SQUID_INK"] = self.squidink_orders(state.order_depths["SQUID_INK"], state)
 
         trader_data = {
             "kelp_price_history": self.kelp_price_history,

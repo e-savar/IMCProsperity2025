@@ -170,10 +170,13 @@ class Trader:
 
         return orders
 
-    def resin_orders(self, order_depth: OrderDepth, fair_value: int, width: int, position: int, position_limit: int) -> List[Order]:
+    def resin_orders(self, order_depth: OrderDepth, width: int, state: TradingState) -> List[Order]:
         orders: List[Order] = []
         buy_order_volume = 0
         sell_order_volume = 0
+        position_limit = 50
+        position = state.position.get("RAINFOREST_RESIN", 0)
+        fair_value = self.resin_fair_value
         
         # Find prices above and below fair value
         try:
@@ -257,25 +260,20 @@ class Trader:
 
         # Handle RAINFOREST_RESIN
         if "RAINFOREST_RESIN" in state.order_depths:
-            resin_position = state.position.get("RAINFOREST_RESIN", 0)
-            resin_orders = self.resin_orders(
-                state.order_depths["RAINFOREST_RESIN"], 
-                self.resin_fair_value, 
-                2, 
-                resin_position, 
-                50
-            )
+            resin_orders = self.resin_orders(state.order_depths["RAINFOREST_RESIN"], 2, state)
             result["RAINFOREST_RESIN"] = resin_orders
+
+        # Handle KELP
+        if "KELP" in state.order_depths:
+            kelp_orders = self.kelp_mean_reversion_strategy(state.order_depths["KELP"], state)
+            result["KELP"] = kelp_orders 
 
         # Handle SQUID_INK if needed
         # if "SQUID_INK" in state.order_depths:
         #     squid_orders = self.squidink_orders(state.order_depths["SQUID_INK"], state)
         #     result["SQUID_INK"] = squid_orders
             
-        # Handle KELP with mean reversion strategy
-        if "KELP" in state.order_depths:
-            kelp_orders = self.kelp_mean_reversion_strategy(state.order_depths["KELP"], state)
-            result["KELP"] = kelp_orders     
+            
 
         # Save state for next iteration
         trader_data = {

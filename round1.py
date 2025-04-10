@@ -32,9 +32,9 @@ class Trader:
 
         # SQUID_INK Z-score strategy parameters
         self.squid_prices = []
-        self.squid_window = 10
-        self.squid_upper_z = 0.8
-        self.squid_lower_z = -0.8
+        self.squid_window = 15
+        self.squid_upper_z = 1.3
+        self.squid_lower_z = -1.3
         self.squid_position_limit = 50
 
         # Conversion tracking

@@ -31,11 +31,23 @@ class Trader:
         self.resin_fair_value = 10000
 
         # SQUID_INK Z-score strategy parameters
-        self.squid_prices = []
-        self.squid_window = 15
-        self.squid_upper_z = 1.3
-        self.squid_lower_z = -1.3
-        self.squid_position_limit = 50
+        self.squid_ink_price_history = []
+        self.lookback_window_squid_ink = 100
+        self.min_history_length_squid_ink = 20
+        self.z_threshold_squid_ink = 1.5
+        self.ewma_alpha_squid_ink = 0.1
+        self.ewma_mean_squid_ink = None
+        self.ewma_var_squid_ink = None
+        self.bollinger_width_squid_ink = 2.0
+        self.squid_ink_last_prices = []
+        self.momentum_window_squid_ink = 5
+        self.momentum_weight_squid_ink = 0.3
+
+        #kelp momentum
+        self.squid_ink_weighted_alpha = 0.7  # For weighted moving average
+        self.squid_ink_volatility_window = 15  # For volatility calculation
+        self.squid_ink_bollinger_width= 2.0  # For Bollinger Bands
+
 
         # Conversion tracking
         self.prev_timestamp = None
@@ -417,45 +429,84 @@ class Trader:
 
     def squidink_orders(self, order_depth: OrderDepth, state: TradingState) -> List[Order]:
         orders = []
-        product = "SQUID_INK"
-        position = state.position.get(product, 0)
-        position_limit = self.squid_position_limit
+        position = state.position.get("SQUID_INK", 0)
+        buy_order_volume = 0
+        sell_order_volume = 0
 
         if not order_depth.buy_orders or not order_depth.sell_orders:
             return orders
 
         best_bid = max(order_depth.buy_orders.keys())
         best_ask = min(order_depth.sell_orders.keys())
+        mid_price = (best_ask + best_bid) / 2
+        
+        self.squid_ink_price_history.append(mid_price)
+        if len(self.squid_ink_price_history) > self.lookback_window_squid_ink:
+            self.squid_ink_price_history.pop(0)
 
-        if best_bid is None or best_ask is None:
-            return orders
+        # Calculate weighted moving average
+        squid_ink_wma_mean = self.calculate_wma(self.squid_ink_price_history, self.lookback_window_squid_ink, self.squid_ink_weighted_alpha)
 
-        mid_price = (best_bid + best_ask) / 2
-        self.squid_prices.append(mid_price)
+        # Calculate volatility (standard deviation)
+        volatility = self.calculate_volatility(self.squid_ink_price_history, self.squid_ink_volatility_window)
 
-        if len(self.squid_prices) > self.squid_window:
-            self.squid_prices.pop(0)
+        # Update EWMA mean and variance
+        self.ewma_mean_squid_ink, self.ewma_var_squid_ink = self.update_ewma(mid_price, self.ewma_mean_squid_ink, self.ewma_var_squid_ink, 0.1)
 
-        if len(self.squid_prices) < self.squid_window:
-            return orders
+        # Calculate dynamic Bollinger Bands with higher volatility weighting
+        std_dev = volatility if volatility > 0 else np.std(self.squid_ink_price_history)
+        upper_band = squid_ink_wma_mean + self.bollinger_width_squid_ink * 1.5 * std_dev  # Increase the multiplier for wider bands
+        lower_band = squid_ink_wma_mean - self.bollinger_width_squid_ink * 1.5 * std_dev
 
-        mean = np.mean(self.squid_prices)
-        std = np.std(self.squid_prices) + 1e-9
-        z_score = (mid_price - mean) / std
+        # Z-score for mean reversion with increased momentum influence
+        z_score = (mid_price - squid_ink_wma_mean) / std_dev if std_dev > 0 else 0
+        momentum = self.squid_ink_last_prices[-1] - self.squid_ink_last_prices[0] if len(self.squid_ink_last_prices) >= 2 else 0
+        adjusted_z = z_score + (momentum / std_dev if std_dev > 0 else 0)
 
-        # Short Signal
-        if z_score > self.squid_upper_z:
-            volume = min(order_depth.buy_orders.get(best_bid, 0), position_limit - position)
-            if volume > 0:
-                orders.append(Order(product, best_bid, -volume))
+        # Target position with a higher scaling factor to increase position shifts
+        position_bias = int(50 * (adjusted_z / 2))  # Increased the scaling for stronger position bias
+        target_position = max(-50, min(50, -position_bias))
 
-        # Long Signal
-        elif z_score < self.squid_lower_z:
-            volume = min(order_depth.sell_orders.get(best_ask, 0), position_limit + position)
-            if volume > 0:
-                orders.append(Order(product, best_ask, volume))
+        position_diff = target_position - (position + buy_order_volume - sell_order_volume)
+
+        # If the price is too low, buy
+        if mid_price < lower_band:
+            for ask_price in sorted(order_depth.sell_orders.keys()):
+                if ask_price < squid_ink_wma_mean:
+                    available_volume = -order_depth.sell_orders[ask_price]
+                    qty = min(available_volume, 50 - position - buy_order_volume)
+                    qty = min(qty, 50)  # Allow larger position shifts
+                    if qty > 0:
+                        orders.append(Order("SQUID_INK", ask_price, qty))
+                        buy_order_volume += qty
+
+        # If the price is too high, sell
+        if mid_price > upper_band:
+            for bid_price in sorted(order_depth.buy_orders.keys(), reverse=True):
+                if bid_price > squid_ink_wma_mean:
+                    available_volume = order_depth.buy_orders[bid_price]
+                    qty = min(available_volume, 50 + position - sell_order_volume)
+                    qty = min(qty, 50)  # Allow larger position shifts
+                    if qty > 0:
+                        orders.append(Order("SQUID_INK", bid_price, -qty))
+                        sell_order_volume += qty
+
+        # Adjust order based on volatility (larger orders in higher volatility)
+        if position_diff > 0:
+            buy_price = best_bid + 1
+            qty = min(position_diff, 50 - position - buy_order_volume)
+            qty = min(qty, 50)  # Allow larger position shifts
+            if qty > 0:
+                orders.append(Order("SQUID_INK", buy_price, qty))
+        elif position_diff < 0:
+            sell_price = best_ask - 1
+            qty = min(-position_diff, 50 + position - sell_order_volume)
+            qty = min(qty, 50)  # Allow larger position shifts
+            if qty > 0:
+                orders.append(Order("SQUID_INK", sell_price, -qty))
 
         return orders
+
 
     def run(self, state: TradingState):
         result = {}

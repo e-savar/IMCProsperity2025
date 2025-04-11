@@ -55,6 +55,7 @@ class Trader:
         # DJEMBES parameters
         self.djembe_position_limit = 60
         self.djembe_prices = []
+        self.djembe_window = 10
 
         # PICNIC_BASKET_1 parameters
         # contain 6 croissants, 3 jams, 1 DJEMBES
@@ -297,7 +298,7 @@ class Trader:
         spread_sensitivity = 1.5  # controls how aggressively spread increases with momentum
 
         spread = base_spread + spread_sensitivity * momentum
-        spread = min(max(spread, 5), 50)  # clamp to reasonable range
+        spread = min(max(spread, 5), 40)  # clamp to reasonable range
 
         # Market making quotes
         order_size = 50  # fixed market making size
@@ -315,52 +316,57 @@ class Trader:
 
         return orders
 
-
-
-
-    def djembes_strategy(self, order_depth: OrderDepth, state: TradingState):
-        symbol = "DJEMBES"
-        position = state.position.get(symbol, 0)
-        limit = self.djembe_position_limit
+    def djembes_strategy(self, order_depth: OrderDepth, state: TradingState) -> List[Order]:
         orders = []
+        product = "DJEMBES"
+        position = state.position.get(product, 0)
+        position_limit = self.djembe_position_limit
 
         if not order_depth.buy_orders or not order_depth.sell_orders:
             return orders
 
-        best_bid = max(order_depth.buy_orders)
-        best_ask = min(order_depth.sell_orders)
-        mid_price = (best_bid + best_ask) / 2
+        best_bid = max(order_depth.buy_orders.keys())
+        best_ask = min(order_depth.sell_orders.keys())
 
-        # Track mid prices for DJEMBES
-        self.djembe_prices.append(mid_price)
-        if len(self.djembe_prices) > self.rolling_window:
-            self.djembe_prices.pop(0)
-
-        if len(self.djembe_prices) < self.rolling_window:
+        if best_bid is None or best_ask is None:
             return orders
 
-        # === Indicators ===
-        mean_price = np.mean(self.djembe_prices)
+        # Mid-price as fair value estimate
+        mid_price = (best_bid + best_ask) / 2
+        self.djembe_prices.append(mid_price)
 
-        # Momentum: simple difference between current and previous price
-        momentum = mid_price - self.djembe_prices[-2] if len(self.djembe_prices) > 1 else 0
+        if len(self.djembe_prices) > self.djembe_window:
+            self.djembe_prices.pop(0)
 
-        spread = 2  # ticks away from mean to quote
-        volume = 5  # order size per level
+        if len(self.djembe_prices) < self.djembe_window:
+            return orders
 
-        # === Momentum-based Strategy ===
+        # Mean-reversion fair price
+        fair_price = np.mean(self.djembe_prices[-self.djembe_window:])
 
-        # BUY SIDE (momentum is positive, price is rising)
-        if position < limit and momentum > 0:
-            buy_price = int(mid_price - spread)
-            buy_volume = min(volume, limit - position)
-            orders.append(Order(symbol, buy_price, buy_volume))
+        # Momentum-based spread adjustment
+        momentum = abs(mid_price - fair_price)
 
-        # SELL SIDE (momentum is negative, price is falling)
-        if position > 0 and momentum < 0:
-            sell_price = int(mid_price + spread)
-            sell_volume = min(volume, position + limit)
-            orders.append(Order(symbol, sell_price, -sell_volume))
+        # Tuned parameters based on DJEMBES behavior
+        base_spread = 5
+        spread_sensitivity = 0.3  # adjust this to control aggressiveness
+
+        spread = base_spread + spread_sensitivity * momentum
+        spread = min(max(spread, 5), 20)  # clamped between 10 and 50 ticks
+
+        # Quoting prices
+        order_size = 50
+        bid_price = int(fair_price - spread)
+        ask_price = int(fair_price + spread)
+
+        # Enforce position limits
+        if position < position_limit:
+            buy_volume = min(order_size, position_limit - position)
+            orders.append(Order(product, bid_price, buy_volume))
+
+        if position > -position_limit:
+            sell_volume = min(order_size, position + position_limit)
+            orders.append(Order(product, ask_price, -sell_volume))
 
         return orders
 

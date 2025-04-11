@@ -340,159 +340,62 @@ class Trader:
         if not order_depth.sell_orders or not order_depth.buy_orders:
             return orders
         
-        # Calculate market metrics
+        # Calculate current mid price
         best_ask = min(order_depth.sell_orders.keys())
         best_bid = max(order_depth.buy_orders.keys())
         mid_price = (best_ask + best_bid) / 2
-        spread = best_ask - best_bid
         
-        # Calculate order book imbalance
-        bid_volume = sum(order_depth.buy_orders.values())
-        ask_volume = -sum(order_depth.sell_orders.values())  # Convert to positive
-        total_volume = bid_volume + ask_volume
-        # Avoid division by zero
-        imbalance = (bid_volume - ask_volume) / total_volume if total_volume > 0 else 0
-        
-        # Store historical prices and spreads for analysis
+        # Initialize and update price history
         if not hasattr(self, 'djembe_prices'):
             self.djembe_prices = []
-            self.djembe_spreads = []
-        
         self.djembe_prices.append(mid_price)
-        self.djembe_spreads.append(spread)
         
-        # Only proceed when we have enough historical data
-        if len(self.djembe_prices) < 20:
+        # Wait until we have enough data
+        if len(self.djembe_prices) < 300:
             return orders
         
-        # Calculate volatility (using standard deviation of returns)
-        price_changes = [self.djembe_prices[i] - self.djembe_prices[i-1] for i in range(1, len(self.djembe_prices))]
-        volatility = np.std(price_changes[-20:])  # 20-period volatility
+        # Calculate long-term mean
+        window_size = 300  # Use last 300 price points
+        mean_price = np.mean(self.djembe_prices[-window_size:])
         
-        # Calculate average daily range (ADR)
-        recent_prices = self.djembe_prices[-100:] if len(self.djembe_prices) >= 100 else self.djembe_prices
-        adr = max(recent_prices) - min(recent_prices)
+        # Calculate standard deviation for determining significant deviations
+        std_dev = np.std(self.djembe_prices[-window_size:])
         
-        # Analyze spread patterns
-        avg_spread = np.mean(self.djembe_spreads[-20:])
-        spread_ratio = spread / avg_spread if avg_spread > 0 else 1.0
+        # Calculate z-score (number of standard deviations from mean)
+        z_score = (mid_price - mean_price) / std_dev if std_dev > 0 else 0
         
-        # ===== DYNAMIC PARAMETERS BASED ON SPREAD =====
+        # Simple position sizing based on deviation
+        base_size = int(limit * 0.2)  # 20% of position limit
         
-        # Position sizing adjusted by spread
-        base_size = max(1, int(limit * 0.10))  # Base position size (10% of limit)
-        
-        # When spread is wider than average, increase size for market making
-        # When spread is tighter than average, decrease size for market making
-        spread_size_factor = min(2.0, max(0.5, spread_ratio))
-        
-        # Volatility adjustment
-        vol_adjusted_size = int(base_size * spread_size_factor * (1 / (1 + volatility)))
-        
-        # Dynamic price levels - use spread to determine level distances
-        # Wider spreads = wider levels
-        level_distance = max(1, int(spread * 0.5))  # Half the current spread
-        
-        level1 = mid_price - level_distance
-        level2 = mid_price - (level_distance * 2)
-        level3 = mid_price + level_distance
-        level4 = mid_price + (level_distance * 2)
-        
-        # Risk management - reduce position sizes when approaching limits
-        risk_factor = min(1.0, (0.8 * limit - abs(position)) / (0.8 * limit))
-        risk_factor = max(0.2, risk_factor)  # At least 20% of normal size
-        
-        # ===== STRATEGY COMPONENTS =====
-        
-        # 1. SPREAD-BASED MARKET MAKING STRATEGY
-        # More aggressive when spreads are wide, more conservative when tight
-        
-        # Calculate remaining capacity
+        # Calculate available capacity
         buy_capacity = limit - position
         sell_capacity = limit + position
         
-        # If spread is wider than average, be more aggressive with market making
-        if spread > avg_spread * 1.2:
-            # Wide spread - good market making opportunity
-            mm_size = max(1, int(vol_adjusted_size * risk_factor * 1.5))
-            
-            if buy_capacity > 0:
-                # Place bid at improved price to capture wider spread
-                buy_price = best_bid + 1
-                orders.append(Order(symbol, buy_price, min(mm_size, buy_capacity)))
-            
-            if sell_capacity > 0:
-                # Place ask at improved price to capture wider spread
-                sell_price = best_ask - 1
-                orders.append(Order(symbol, sell_price, -min(mm_size, sell_capacity)))
+        # Pure mean reversion logic
+        if z_score <= -2.0 and buy_capacity > 0:
+            # Price significantly below mean - BUY
+            buy_price = best_bid + 1  # Aggressive buy
+            buy_volume = min(base_size, buy_capacity)
+            orders.append(Order(symbol, buy_price, buy_volume))
         
-        # 2. ORDER BOOK IMBALANCE STRATEGY - adjusted by spread
-        imbalance_threshold = 0.2
+        elif z_score >= 2.0 and sell_capacity > 0:
+            # Price significantly above mean - SELL
+            sell_price = best_ask - 1  # Aggressive sell
+            sell_volume = min(base_size, sell_capacity)
+            orders.append(Order(symbol, sell_price, -sell_volume))
         
-        # Adjust imbalance threshold based on spread
-        # Tighter spreads require stronger imbalance to act
-        adjusted_threshold = imbalance_threshold * (1.5 / spread_ratio)
+        # Take profit when price reverts toward mean
+        if position > 0 and z_score > 0:
+            # We're long and price is now above mean - take profit
+            take_profit_volume = min(position, int(position * 0.5))  # Close half position
+            orders.append(Order(symbol, best_ask, -take_profit_volume))
         
-        if imbalance > adjusted_threshold and position < limit * 0.8:
-            # Strong buying pressure, go long
-            price = best_bid + min(2, max(1, int(spread * 0.3)))  # Scale price improvement with spread
-            size = max(1, int(vol_adjusted_size * risk_factor * min(1.0, imbalance * 2)))
-            if buy_capacity > 0:
-                orders.append(Order(symbol, price, min(size, buy_capacity)))
-        
-        elif imbalance < -adjusted_threshold and position > -limit * 0.8:
-            # Strong selling pressure, go short
-            price = best_ask - min(2, max(1, int(spread * 0.3)))  # Scale price improvement with spread
-            size = max(1, int(vol_adjusted_size * risk_factor * min(1.0, -imbalance * 2)))
-            if sell_capacity > 0:
-                orders.append(Order(symbol, price, -min(size, sell_capacity)))
-        
-        # 3. MULTI-LEVEL LIQUIDITY PROVISION STRATEGY
-        # Size scaling by level - adjusted for spread
-        level1_size = max(1, int(vol_adjusted_size * risk_factor * 0.5))
-        level2_size = max(1, int(vol_adjusted_size * risk_factor))
-        
-        # Provide liquidity at multiple levels if we have capacity
-        if buy_capacity > 0:
-            if int(level1) < best_bid:  # Ensure we don't cross the spread
-                orders.append(Order(symbol, int(level1), min(level1_size, buy_capacity)))
-                buy_capacity -= level1_size
-                
-            if buy_capacity > 0 and int(level2) < int(level1):
-                orders.append(Order(symbol, int(level2), min(level2_size, buy_capacity)))
-        
-        if sell_capacity > 0:
-            if int(level3) > best_ask:  # Ensure we don't cross the spread
-                orders.append(Order(symbol, int(level3), -min(level1_size, sell_capacity)))
-                sell_capacity -= level1_size
-                
-            if sell_capacity > 0 and int(level4) > int(level3):
-                orders.append(Order(symbol, int(level4), -min(level2_size, sell_capacity)))
-        
-        # 4. MEAN REVERSION FOR EXTREME MOVES - with spread threshold
-        lookback = min(50, len(self.djembe_prices))
-        short_ma = np.mean(self.djembe_prices[-10:])
-        long_ma = np.mean(self.djembe_prices[-lookback:])
-        
-        # Only act on significant deviations when spread isn't too wide
-        # Wide spreads during extreme moves could indicate real market shifts
-        if spread < avg_spread * 1.5:  # Only if spread isn't too wide
-            if short_ma < long_ma * 0.95 and position < limit * 0.5:
-                # Significantly below MA, buy opportunity
-                price = best_bid + max(1, int(spread * 0.25))  # Scale with spread
-                size = max(1, int(vol_adjusted_size * risk_factor * 1.5))
-                if buy_capacity > 0:
-                    orders.append(Order(symbol, price, min(size, buy_capacity)))
-                    
-            elif short_ma > long_ma * 1.05 and position > -limit * 0.5:
-                # Significantly above MA, sell opportunity
-                price = best_ask - max(1, int(spread * 0.25))  # Scale with spread
-                size = max(1, int(vol_adjusted_size * risk_factor * 1.5))
-                if sell_capacity > 0:
-                    orders.append(Order(symbol, price, -min(size, sell_capacity)))
+        elif position < 0 and z_score < 0:
+            # We're short and price is now below mean - take profit
+            take_profit_volume = min(-position, int(-position * 0.5))  # Close half position
+            orders.append(Order(symbol, best_bid, take_profit_volume))
         
         return orders
-
     def croissants_strategy(self, order_depth: OrderDepth, state: TradingState):
         orders = []
         position = state.position.get("CROISSANTS", 0)
@@ -692,7 +595,7 @@ class Trader:
         best_bid_volume = order_depth.buy_orders[best_bid]
         best_ask_volume = order_depth.sell_orders[best_ask]
 
-        threshold = 0.001
+        threshold = 0.0001
         if best_ask < expected_basket_price * (1 - threshold):
             # buy basket
             quantity = min(self.picnic_basket_1_limit, best_ask_volume)
@@ -704,6 +607,39 @@ class Trader:
 
         return orders
 
+    def picnic_basket_2_strategy(self, order_depth: OrderDepth, state: TradingState):
+        # This strategy should consider the limits and the current order depth
+        orders = []
+
+        # get expected price of basket (4x croissants, 2x jams)
+        croissant_best_bid = max(state.order_depths["CROISSANTS"].buy_orders.keys())
+        croissant_best_ask = min(state.order_depths["CROISSANTS"].sell_orders.keys())
+        croissant_price = (croissant_best_ask + croissant_best_bid) / 2
+
+        jam_best_bid = max(state.order_depths["JAMS"].buy_orders.keys())
+        jam_best_ask = min(state.order_depths["JAMS"].sell_orders.keys())
+        jam_price = (jam_best_ask + jam_best_bid) / 2
+
+        # calculate expected price of basket
+        expected_basket_price = (4 * croissant_price) + (2 * jam_price)
+
+        best_ask = min(order_depth.sell_orders.keys())
+        best_bid = max(order_depth.buy_orders.keys())
+
+        best_bid_volume = order_depth.buy_orders[best_bid]
+        best_ask_volume = order_depth.sell_orders[best_ask]
+
+        threshold = 0.001
+        if best_ask < expected_basket_price * (1 - threshold):
+            # buy basket
+            quantity = min(self.picnic_basket_2_limit, best_ask_volume)
+            orders.append(Order("PICNIC_BASKET2", best_ask, quantity))
+        elif best_bid > expected_basket_price * (1 + threshold):
+            # sell basket
+            quantity = min(self.picnic_basket_2_limit, best_bid_volume)
+            orders.append(Order("PICNIC_BASKET2", best_bid, -quantity))
+
+        return orders
     def run(self, state: TradingState):
         result = {}
 
@@ -721,11 +657,11 @@ class Trader:
             self.kelp_last_prices = trader_data.get("kelp_last_prices", self.kelp_last_prices)
             self.timeframe_data = trader_data.get("timeframe_data", self.timeframe_data)
 
-        if "RAINFOREST_RESIN" in state.order_depths:
-            result["RAINFOREST_RESIN"] = self.resin_strategy(state.order_depths["RAINFOREST_RESIN"], 2, state)
+        # if "RAINFOREST_RESIN" in state.order_depths:
+        #     result["RAINFOREST_RESIN"] = self.resin_strategy(state.order_depths["RAINFOREST_RESIN"], 2, state)
 
-        if "KELP" in state.order_depths:
-            result["KELP"] = self.kelp_strategy(state.order_depths["KELP"], state)
+        # if "KELP" in state.order_depths:
+        #     result["KELP"] = self.kelp_strategy(state.order_depths["KELP"], state)
         
         # if "SQUID_INK" in state.order_depths:
         #     result["SQUID_INK"] = self.squidink_strategy(state.order_depths["SQUID_INK"], state)
@@ -733,15 +669,17 @@ class Trader:
         # if "JAMS" in state.order_depths:
         #     result["JAMS"] = self.jams_strategy(state.order_depths["JAMS"], state)
 
-        if "CROISSANTS" in state.order_depths:
-            result["CROISSANTS"] = self.croissants_strategy(state.order_depths["CROISSANTS"], state)
+        # if "CROISSANTS" in state.order_depths:
+        #     result["CROISSANTS"] = self.croissants_strategy(state.order_depths["CROISSANTS"], state)
 
-        if "DJEMBES" in state.order_depths:
-            result["DJEMBES"] = self.djembe_strategy(state.order_depths["DJEMBES"], state)
+        # if "DJEMBES" in state.order_depths:
+        #     result["DJEMBES"] = self.djembe_strategy(state.order_depths["DJEMBES"], state)
 
-        if "PICNIC_BASKET1" in state.order_depths:
-            result["PICNIC_BASKET1"] = self.picnic_basket_1_strategy(state.order_depths["PICNIC_BASKET1"], state)
+        # if "PICNIC_BASKET1" in state.order_depths:
+        #     result["PICNIC_BASKET1"] = self.picnic_basket_1_strategy(state.order_depths["PICNIC_BASKET1"], state)
 
+        # if "PICNIC_BASKET2" in state.order_depths:
+        #     result["PICNIC_BASKET2"] = self.picnic_basket_2_strategy(state.order_depths["PICNIC_BASKET2"], state)
         trader_data = {
             "kelp_price_history": self.kelp_price_history,
             "ewma_mean_kelp": self.ewma_mean_kelp,

@@ -317,59 +317,7 @@ class Trader:
         return orders
 
     def djembes_strategy(self, order_depth: OrderDepth, state: TradingState) -> List[Order]:
-        orders = []
-        product = "DJEMBES"
-        position = state.position.get(product, 0)
-        position_limit = self.djembe_position_limit
-
-        if not order_depth.buy_orders or not order_depth.sell_orders:
-            return orders
-
-        best_bid = max(order_depth.buy_orders.keys())
-        best_ask = min(order_depth.sell_orders.keys())
-
-        if best_bid is None or best_ask is None:
-            return orders
-
-        # Mid-price as fair value estimate
-        mid_price = (best_bid + best_ask) / 2
-        self.djembe_prices.append(mid_price)
-
-        if len(self.djembe_prices) > self.djembe_window:
-            self.djembe_prices.pop(0)
-
-        if len(self.djembe_prices) < self.djembe_window:
-            return orders
-
-        # Mean-reversion fair price
-        fair_price = np.mean(self.djembe_prices[-self.djembe_window:])
-
-        # Momentum-based spread adjustment
-        momentum = abs(mid_price - fair_price)
-
-        # Tuned parameters based on DJEMBES behavior
-        base_spread = 5
-        spread_sensitivity = 0.3  # adjust this to control aggressiveness
-
-        spread = base_spread + spread_sensitivity * momentum
-        spread = min(max(spread, 5), 20)  # clamped between 10 and 50 ticks
-
-        # Quoting prices
-        order_size = 50
-        bid_price = int(fair_price - spread)
-        ask_price = int(fair_price + spread)
-
-        # Enforce position limits
-        if position < position_limit:
-            buy_volume = min(order_size, position_limit - position)
-            orders.append(Order(product, bid_price, buy_volume))
-
-        if position > -position_limit:
-            sell_volume = min(order_size, position + position_limit)
-            orders.append(Order(product, ask_price, -sell_volume))
-
-        return orders
-
+        pass
     def croissants_strategy(self, order_depth: OrderDepth, state: TradingState):
         symbol = "CROISSANTS"
         position = state.position.get(symbol, 0)
@@ -501,11 +449,11 @@ class Trader:
             self.kelp_last_prices = trader_data.get("kelp_last_prices", self.kelp_last_prices)
             self.timeframe_data = trader_data.get("timeframe_data", self.timeframe_data)
 
-        # if "RAINFOREST_RESIN" in state.order_depths:
-        #     result["RAINFOREST_RESIN"] = self.resin_strategy(state.order_depths["RAINFOREST_RESIN"], 2, state)
+        if "RAINFOREST_RESIN" in state.order_depths:
+            result["RAINFOREST_RESIN"] = self.resin_strategy(state.order_depths["RAINFOREST_RESIN"], 2, state)
 
-        # if "KELP" in state.order_depths:
-        #     result["KELP"] = self.kelp_strategy(state.order_depths["KELP"], state)
+        if "KELP" in state.order_depths:
+            result["KELP"] = self.kelp_strategy(state.order_depths["KELP"], state)
         
         if "SQUID_INK" in state.order_depths:
             result["SQUID_INK"] = self.squidink_strategy(state.order_depths["SQUID_INK"], state)
@@ -513,17 +461,17 @@ class Trader:
         # if "JAMS" in state.order_depths:
         #     result["JAMS"] = self.jams_strategy(state.order_depths["JAMS"], state)
 
-        # if "CROISSANTS" in state.order_depths:
-        #     result["CROISSANTS"] = self.croissants_strategy(state.order_depths["CROISSANTS"], state)
+        if "CROISSANTS" in state.order_depths:
+            result["CROISSANTS"] = self.croissants_strategy(state.order_depths["CROISSANTS"], state)
 
         # if "DJEMBES" in state.order_depths:
         #     result["DJEMBES"] = self.djembes_strategy(state.order_depths["DJEMBES"], state)
 
-        # if "PICNIC_BASKET1" in state.order_depths:
-        #     result["PICNIC_BASKET1"] = self.picnic_basket_1_strategy(state.order_depths["PICNIC_BASKET1"], state)
+        if "PICNIC_BASKET1" in state.order_depths:
+            result["PICNIC_BASKET1"] = self.picnic_basket_1_strategy(state.order_depths["PICNIC_BASKET1"], state)
 
-        # if "PICNIC_BASKET2" in state.order_depths:
-        #     result["PICNIC_BASKET2"] = self.picnic_basket_2_strategy(state.order_depths["PICNIC_BASKET2"], state)
+        if "PICNIC_BASKET2" in state.order_depths:
+            result["PICNIC_BASKET2"] = self.picnic_basket_2_strategy(state.order_depths["PICNIC_BASKET2"], state)
         
         trader_data = {
             "kelp_price_history": self.kelp_price_history,

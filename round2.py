@@ -595,7 +595,7 @@ class Trader:
         best_bid_volume = order_depth.buy_orders[best_bid]
         best_ask_volume = order_depth.sell_orders[best_ask]
 
-        threshold = 0.0001
+        threshold = 0.001
         if best_ask < expected_basket_price * (1 - threshold):
             # buy basket
             quantity = min(self.picnic_basket_1_limit, best_ask_volume)

@@ -268,7 +268,6 @@ class Trader:
         product = "SQUID_INK"
         position = state.position.get(product, 0)
         position_limit = self.squid_position_limit
-        min_order_size = 10  # Minimum order size to avoid placing too small orders
 
         if not order_depth.buy_orders or not order_depth.sell_orders:
             return orders
@@ -279,21 +278,9 @@ class Trader:
         if best_bid is None or best_ask is None:
             return orders
 
-        # Calculate VWAP for the product
-        total_price = 0
-        total_volume = 0
-        for price, volume in order_depth.buy_orders.items():
-            total_price += price * volume
-            total_volume += volume
-        for price, volume in order_depth.sell_orders.items():
-            total_price += price * volume
-            total_volume += volume
-
-        if total_volume == 0:
-            return orders
-
-        vwap = total_price / total_volume
-        self.squid_prices.append(vwap)
+        # Use mid-price as fair value estimate
+        mid_price = (best_bid + best_ask) / 2
+        self.squid_prices.append(mid_price)
 
         if len(self.squid_prices) > self.squid_window:
             self.squid_prices.pop(0)
@@ -301,34 +288,35 @@ class Trader:
         if len(self.squid_prices) < self.squid_window:
             return orders
 
-        # === Enhanced Strategy Logic ===
-        if vwap is None:
-            return orders
+        # Mean-reversion fair price based on moving average of mid-prices
+        fair_price = np.mean(self.squid_prices[-self.squid_window:])
 
-        # Calculate volatility (standard deviation of recent prices)
-        recent_prices = np.array(self.squid_prices[-self.squid_window:])
-        volatility = np.std(recent_prices)
+        # === Momentum-based dynamic spread ===
+        momentum = abs(mid_price - fair_price)  # size of recent price movement
+        base_spread = 10  # base spread
+        spread_sensitivity = 1.5  # controls how aggressively spread increases with momentum
 
-        # Calculate order book imbalance
-        buy_orders_volume = sum(order_depth.buy_orders.values())
-        sell_orders_volume = sum(order_depth.sell_orders.values())
-        order_book_imbalance = (buy_orders_volume - sell_orders_volume) / (buy_orders_volume + sell_orders_volume)
+        spread = base_spread + spread_sensitivity * momentum
+        spread = min(max(spread, 5), 50)  # clamp to reasonable range
 
-        # Use volatility and order book imbalance to adjust trading logic
-        if volatility > self.squid_volatility_threshold:
-            # High volatility: reduce the order size or refrain from trading
-            order_size = min(min_order_size, position_limit - position) if order_book_imbalance > 0 else 0
-        else:
-            # Low volatility: increase order size and trade more actively
-            order_size = min(position_limit - position, 20)
+        # Market making quotes
+        order_size = 50  # fixed market making size
+        bid_price = int(fair_price - spread)
+        ask_price = int(fair_price + spread)
 
-        if best_bid < vwap and order_size > 0:
-            orders.append(Order(product, best_ask, -order_size))
+        # Enforce position limits
+        if position < position_limit:
+            buy_volume = min(order_size, position_limit - position)
+            orders.append(Order(product, bid_price, buy_volume))
 
-        elif best_ask > vwap and order_size > 0:
-            orders.append(Order(product, best_bid, order_size)) 
+        if position > -position_limit:
+            sell_volume = min(order_size, position + position_limit)
+            orders.append(Order(product, ask_price, -sell_volume))
 
         return orders
+
+
+
 
     def djembes_strategy(self, order_depth: OrderDepth, state: TradingState):
         symbol = "DJEMBES"
@@ -353,20 +341,24 @@ class Trader:
 
         # === Indicators ===
         mean_price = np.mean(self.djembe_prices)
+
+        # Momentum: simple difference between current and previous price
+        momentum = mid_price - self.djembe_prices[-2] if len(self.djembe_prices) > 1 else 0
+
         spread = 2  # ticks away from mean to quote
         volume = 5  # order size per level
 
-        # === Market Making Orders ===
+        # === Momentum-based Strategy ===
 
-        # BUY SIDE
-        if position < limit:
-            buy_price = int(mean_price - spread)
+        # BUY SIDE (momentum is positive, price is rising)
+        if position < limit and momentum > 0:
+            buy_price = int(mid_price - spread)
             buy_volume = min(volume, limit - position)
             orders.append(Order(symbol, buy_price, buy_volume))
 
-        # SELL SIDE
-        if position > -limit:
-            sell_price = int(mean_price + spread)
+        # SELL SIDE (momentum is negative, price is falling)
+        if position > 0 and momentum < 0:
+            sell_price = int(mid_price + spread)
             sell_volume = min(volume, position + limit)
             orders.append(Order(symbol, sell_price, -sell_volume))
 
@@ -485,7 +477,7 @@ class Trader:
             orders.append(Order("PICNIC_BASKET2", best_bid, -quantity))
 
         return orders
-    
+
     def run(self, state: TradingState):
         result = {}
 
@@ -506,21 +498,20 @@ class Trader:
         # if "RAINFOREST_RESIN" in state.order_depths:
         #     result["RAINFOREST_RESIN"] = self.resin_strategy(state.order_depths["RAINFOREST_RESIN"], 2, state)
 
-        # # slight improvement
         # if "KELP" in state.order_depths:
         #     result["KELP"] = self.kelp_strategy(state.order_depths["KELP"], state)
         
-        # if "SQUID_INK" in state.order_depths:
-        #     result["SQUID_INK"] = self.squidink_strategy(state.order_depths["SQUID_INK"], state)
+        if "SQUID_INK" in state.order_depths:
+            result["SQUID_INK"] = self.squidink_strategy(state.order_depths["SQUID_INK"], state)
         
         # if "JAMS" in state.order_depths:
         #     result["JAMS"] = self.jams_strategy(state.order_depths["JAMS"], state)
 
-        if "CROISSANTS" in state.order_depths:
-            result["CROISSANTS"] = self.croissants_strategy(state.order_depths["CROISSANTS"], state)
+        # if "CROISSANTS" in state.order_depths:
+        #     result["CROISSANTS"] = self.croissants_strategy(state.order_depths["CROISSANTS"], state)
 
-        if "DJEMBES" in state.order_depths:
-            result["DJEMBES"] = self.djembes_strategy(state.order_depths["DJEMBES"], state)
+        # if "DJEMBES" in state.order_depths:
+        #     result["DJEMBES"] = self.djembes_strategy(state.order_depths["DJEMBES"], state)
 
         # if "PICNIC_BASKET1" in state.order_depths:
         #     result["PICNIC_BASKET1"] = self.picnic_basket_1_strategy(state.order_depths["PICNIC_BASKET1"], state)

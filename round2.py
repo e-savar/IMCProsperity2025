@@ -292,13 +292,26 @@ class Trader:
         # Mean-reversion fair price based on moving average of mid-prices
         fair_price = np.mean(self.squid_prices[-self.squid_window:])
 
-        # === Momentum-based dynamic spread ===
-        momentum = abs(mid_price - fair_price)  # size of recent price movement
-        base_spread = 10  # base spread
-        spread_sensitivity = 1.5  # controls how aggressively spread increases with momentum
+        # === Calculate price deviations and z-score ===
+        price_deviations = np.array([abs(price - fair_price) for price in self.squid_prices[-self.squid_window:]])
+        mean_deviation = np.mean(price_deviations)
+        std_deviation = np.std(price_deviations)
 
-        spread = base_spread + spread_sensitivity * momentum
-        spread = min(max(spread, 5), 40)  # clamp to reasonable range
+        if std_deviation == 0:
+            z_score = 0  # If no variation, default z-score to 0
+        else:
+            # Z-score for current price deviation
+            current_deviation = abs(mid_price - fair_price)
+            z_score = (current_deviation - mean_deviation) / std_deviation
+
+        # === Adjust spread based on z-score ===
+        base_spread = 9  # base spread
+        spread_sensitivity = 5  # controls how aggressively spread increases with z-score
+
+        # Calculate the spread based on the z-score
+        spread = base_spread + spread_sensitivity * z_score
+
+        # Ensure that spread is non-negative (avoid negative spreads)
 
         # Market making quotes
         order_size = 50  # fixed market making size

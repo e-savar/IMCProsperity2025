@@ -46,18 +46,18 @@ class Trader:
         self.squid_ink_weighted_alpha = 0.7  # For weighted moving average
         self.squid_ink_volatility_window = 15  # For volatility calculation
         self.squid_ink_bollinger_width= 2.0  # For Bollinger Bands
-
+        self.squid_volatility_threshold = 0.1  # Volatility threshold for trading decisions
 
         # Conversion tracking
         self.prev_timestamp = None
         self.timeframe_data = {}
 
-
-        # DJEMBE parameters
+        # DJEMBES parameters
         self.djembe_position_limit = 60
+        self.djembe_price_history = []
 
         # PICNIC_BASKET_1 parameters
-        # contain 6 croissants, 3 jams, 1 djembe
+        # contain 6 croissants, 3 jams, 1 DJEMBES
         self.picnic_basket_1_limit = 60
 
         # PICNIC_BASKET_2 parameters
@@ -268,6 +268,7 @@ class Trader:
         product = "SQUID_INK"
         position = state.position.get(product, 0)
         position_limit = self.squid_position_limit
+        min_order_size = 10  # Minimum order size to avoid placing too small orders
 
         if not order_depth.buy_orders or not order_depth.sell_orders:
             return orders
@@ -278,8 +279,21 @@ class Trader:
         if best_bid is None or best_ask is None:
             return orders
 
-        mid_price = (best_bid + best_ask) / 2
-        self.squid_prices.append(mid_price)
+        # Calculate VWAP for the product
+        total_price = 0
+        total_volume = 0
+        for price, volume in order_depth.buy_orders.items():
+            total_price += price * volume
+            total_volume += volume
+        for price, volume in order_depth.sell_orders.items():
+            total_price += price * volume
+            total_volume += volume
+
+        if total_volume == 0:
+            return orders
+
+        vwap = total_price / total_volume
+        self.squid_prices.append(vwap)
 
         if len(self.squid_prices) > self.squid_window:
             self.squid_prices.pop(0)
@@ -287,38 +301,196 @@ class Trader:
         if len(self.squid_prices) < self.squid_window:
             return orders
 
-        prices = np.array(self.squid_prices)
+        # === Enhanced Strategy Logic ===
+        if vwap is None:
+            return orders
 
-        # === Feature Engineering ===
-        short_ma = np.mean(prices[-5:])
-        long_ma = np.mean(prices[-15:]) if len(prices) >= 15 else short_ma
-        mean = np.mean(prices[-10:])
-        std = np.std(prices[-10:]) + 1e-9
-        z_score = (mid_price - mean) / std
+        # Calculate volatility (standard deviation of recent prices)
+        recent_prices = np.array(self.squid_prices[-self.squid_window:])
+        volatility = np.std(recent_prices)
 
-        # === Strategy Signal ===
-        signal = 0
-        if short_ma > long_ma:
-            signal = 1
-        elif short_ma < long_ma:
-            signal = -1
+        # Calculate order book imbalance
+        buy_orders_volume = sum(order_depth.buy_orders.values())
+        sell_orders_volume = sum(order_depth.sell_orders.values())
+        order_book_imbalance = (buy_orders_volume - sell_orders_volume) / (buy_orders_volume + sell_orders_volume)
 
-        if z_score > 2:
-            signal = -1  # overbought
-        elif z_score < -2:
-            signal = 1   # oversold
+        # Use volatility and order book imbalance to adjust trading logic
+        if volatility > self.squid_volatility_threshold:
+            # High volatility: reduce the order size or refrain from trading
+            order_size = min(min_order_size, position_limit - position) if order_book_imbalance > 0 else 0
+        else:
+            # Low volatility: increase order size and trade more actively
+            order_size = min(position_limit - position, 20)
 
-        # === Trading Logic ===
-        if signal == 1:
-            volume = min(order_depth.sell_orders.get(best_ask, 0), position_limit - position)
-            if volume > 0:
-                orders.append(Order(product, best_ask, volume))  # Buy
+        if best_bid < vwap and order_size > 0:
+            orders.append(Order(product, best_ask, -order_size))
 
-        elif signal == -1:
-            volume = min(order_depth.buy_orders.get(best_bid, 0), position_limit + position)
-            if volume > 0:
-                orders.append(Order(product, best_bid, -volume))  # Sell
+        elif best_ask > vwap and order_size > 0:
+            orders.append(Order(product, best_bid, order_size)) 
 
+        return orders
+
+    def djembe_strategy(self, order_depth: OrderDepth, state: TradingState):
+        symbol = "DJEMBES"
+        orders = []
+        position = state.position.get(symbol, 0)
+        limit = self.djembe_position_limit
+        
+        # Check for market data
+        if not order_depth.sell_orders or not order_depth.buy_orders:
+            return orders
+        
+        # Calculate market metrics
+        best_ask = min(order_depth.sell_orders.keys())
+        best_bid = max(order_depth.buy_orders.keys())
+        mid_price = (best_ask + best_bid) / 2
+        spread = best_ask - best_bid
+        
+        # Calculate order book imbalance
+        bid_volume = sum(order_depth.buy_orders.values())
+        ask_volume = -sum(order_depth.sell_orders.values())  # Convert to positive
+        total_volume = bid_volume + ask_volume
+        # Avoid division by zero
+        imbalance = (bid_volume - ask_volume) / total_volume if total_volume > 0 else 0
+        
+        # Store historical prices and spreads for analysis
+        if not hasattr(self, 'djembe_prices'):
+            self.djembe_prices = []
+            self.djembe_spreads = []
+        
+        self.djembe_prices.append(mid_price)
+        self.djembe_spreads.append(spread)
+        
+        # Only proceed when we have enough historical data
+        if len(self.djembe_prices) < 20:
+            return orders
+        
+        # Calculate volatility (using standard deviation of returns)
+        price_changes = [self.djembe_prices[i] - self.djembe_prices[i-1] for i in range(1, len(self.djembe_prices))]
+        volatility = np.std(price_changes[-20:])  # 20-period volatility
+        
+        # Calculate average daily range (ADR)
+        recent_prices = self.djembe_prices[-100:] if len(self.djembe_prices) >= 100 else self.djembe_prices
+        adr = max(recent_prices) - min(recent_prices)
+        
+        # Analyze spread patterns
+        avg_spread = np.mean(self.djembe_spreads[-20:])
+        spread_ratio = spread / avg_spread if avg_spread > 0 else 1.0
+        
+        # ===== DYNAMIC PARAMETERS BASED ON SPREAD =====
+        
+        # Position sizing adjusted by spread
+        base_size = max(1, int(limit * 0.10))  # Base position size (10% of limit)
+        
+        # When spread is wider than average, increase size for market making
+        # When spread is tighter than average, decrease size for market making
+        spread_size_factor = min(2.0, max(0.5, spread_ratio))
+        
+        # Volatility adjustment
+        vol_adjusted_size = int(base_size * spread_size_factor * (1 / (1 + volatility)))
+        
+        # Dynamic price levels - use spread to determine level distances
+        # Wider spreads = wider levels
+        level_distance = max(1, int(spread * 0.5))  # Half the current spread
+        
+        level1 = mid_price - level_distance
+        level2 = mid_price - (level_distance * 2)
+        level3 = mid_price + level_distance
+        level4 = mid_price + (level_distance * 2)
+        
+        # Risk management - reduce position sizes when approaching limits
+        risk_factor = min(1.0, (0.8 * limit - abs(position)) / (0.8 * limit))
+        risk_factor = max(0.2, risk_factor)  # At least 20% of normal size
+        
+        # ===== STRATEGY COMPONENTS =====
+        
+        # 1. SPREAD-BASED MARKET MAKING STRATEGY
+        # More aggressive when spreads are wide, more conservative when tight
+        
+        # Calculate remaining capacity
+        buy_capacity = limit - position
+        sell_capacity = limit + position
+        
+        # If spread is wider than average, be more aggressive with market making
+        if spread > avg_spread * 1.2:
+            # Wide spread - good market making opportunity
+            mm_size = max(1, int(vol_adjusted_size * risk_factor * 1.5))
+            
+            if buy_capacity > 0:
+                # Place bid at improved price to capture wider spread
+                buy_price = best_bid + 1
+                orders.append(Order(symbol, buy_price, min(mm_size, buy_capacity)))
+            
+            if sell_capacity > 0:
+                # Place ask at improved price to capture wider spread
+                sell_price = best_ask - 1
+                orders.append(Order(symbol, sell_price, -min(mm_size, sell_capacity)))
+        
+        # 2. ORDER BOOK IMBALANCE STRATEGY - adjusted by spread
+        imbalance_threshold = 0.2
+        
+        # Adjust imbalance threshold based on spread
+        # Tighter spreads require stronger imbalance to act
+        adjusted_threshold = imbalance_threshold * (1.5 / spread_ratio)
+        
+        if imbalance > adjusted_threshold and position < limit * 0.8:
+            # Strong buying pressure, go long
+            price = best_bid + min(2, max(1, int(spread * 0.3)))  # Scale price improvement with spread
+            size = max(1, int(vol_adjusted_size * risk_factor * min(1.0, imbalance * 2)))
+            if buy_capacity > 0:
+                orders.append(Order(symbol, price, min(size, buy_capacity)))
+        
+        elif imbalance < -adjusted_threshold and position > -limit * 0.8:
+            # Strong selling pressure, go short
+            price = best_ask - min(2, max(1, int(spread * 0.3)))  # Scale price improvement with spread
+            size = max(1, int(vol_adjusted_size * risk_factor * min(1.0, -imbalance * 2)))
+            if sell_capacity > 0:
+                orders.append(Order(symbol, price, -min(size, sell_capacity)))
+        
+        # 3. MULTI-LEVEL LIQUIDITY PROVISION STRATEGY
+        # Size scaling by level - adjusted for spread
+        level1_size = max(1, int(vol_adjusted_size * risk_factor * 0.5))
+        level2_size = max(1, int(vol_adjusted_size * risk_factor))
+        
+        # Provide liquidity at multiple levels if we have capacity
+        if buy_capacity > 0:
+            if int(level1) < best_bid:  # Ensure we don't cross the spread
+                orders.append(Order(symbol, int(level1), min(level1_size, buy_capacity)))
+                buy_capacity -= level1_size
+                
+            if buy_capacity > 0 and int(level2) < int(level1):
+                orders.append(Order(symbol, int(level2), min(level2_size, buy_capacity)))
+        
+        if sell_capacity > 0:
+            if int(level3) > best_ask:  # Ensure we don't cross the spread
+                orders.append(Order(symbol, int(level3), -min(level1_size, sell_capacity)))
+                sell_capacity -= level1_size
+                
+            if sell_capacity > 0 and int(level4) > int(level3):
+                orders.append(Order(symbol, int(level4), -min(level2_size, sell_capacity)))
+        
+        # 4. MEAN REVERSION FOR EXTREME MOVES - with spread threshold
+        lookback = min(50, len(self.djembe_prices))
+        short_ma = np.mean(self.djembe_prices[-10:])
+        long_ma = np.mean(self.djembe_prices[-lookback:])
+        
+        # Only act on significant deviations when spread isn't too wide
+        # Wide spreads during extreme moves could indicate real market shifts
+        if spread < avg_spread * 1.5:  # Only if spread isn't too wide
+            if short_ma < long_ma * 0.95 and position < limit * 0.5:
+                # Significantly below MA, buy opportunity
+                price = best_bid + max(1, int(spread * 0.25))  # Scale with spread
+                size = max(1, int(vol_adjusted_size * risk_factor * 1.5))
+                if buy_capacity > 0:
+                    orders.append(Order(symbol, price, min(size, buy_capacity)))
+                    
+            elif short_ma > long_ma * 1.05 and position > -limit * 0.5:
+                # Significantly above MA, sell opportunity
+                price = best_ask - max(1, int(spread * 0.25))  # Scale with spread
+                size = max(1, int(vol_adjusted_size * risk_factor * 1.5))
+                if sell_capacity > 0:
+                    orders.append(Order(symbol, price, -min(size, sell_capacity)))
+        
         return orders
 
     def croissants_strategy(self, order_depth: OrderDepth, state: TradingState):
@@ -370,6 +542,168 @@ class Trader:
 
         return orders
 
+    
+        symbol = "DJEMBES"
+        orders = []
+        position = state.position.get(symbol, 0)
+        limit = self.djembe_position_limit
+        
+        # Check for market data
+        if not order_depth.sell_orders or not order_depth.buy_orders:
+            return orders
+        
+        # Calculate market metrics
+        best_ask = min(order_depth.sell_orders.keys())
+        best_bid = max(order_depth.buy_orders.keys())
+        mid_price = (best_ask + best_bid) / 2
+        spread = best_ask - best_bid
+        
+        # Calculate order book imbalance
+        bid_volume = sum(order_depth.buy_orders.values())
+        ask_volume = -sum(order_depth.sell_orders.values())  # Convert to positive
+        total_volume = bid_volume + ask_volume
+        # Avoid division by zero
+        imbalance = (bid_volume - ask_volume) / total_volume if total_volume > 0 else 0
+        
+        # Store historical prices for analysis
+        if not hasattr(self, 'djembe_prices'):
+            self.djembe_prices = []
+        self.djembe_prices.append(mid_price)
+        
+        # Only proceed when we have enough historical data
+        if len(self.djembe_prices) < 20:
+            return orders
+        
+        # Calculate volatility (using standard deviation of returns)
+        price_changes = [self.djembe_prices[i] - self.djembe_prices[i-1] for i in range(1, len(self.djembe_prices))]
+        volatility = np.std(price_changes[-20:])  # 20-period volatility
+        
+        # Calculate average daily range (ADR)
+        recent_prices = self.djembe_prices[-100:] if len(self.djembe_prices) >= 100 else self.djembe_prices
+        adr = max(recent_prices) - min(recent_prices)
+        
+        # Dynamic parameters based on market conditions
+        # Position sizing based on volatility
+        base_size = max(1, int(limit * 0.10))  # Base position size (10% of limit)
+        vol_adjusted_size = int(base_size * (1 / (1 + volatility)))  # Lower size in higher volatility
+        
+        # Dynamic price levels based on ADR
+        adr_factor = 0.05  # 5% of ADR
+        level1 = mid_price - (adr * adr_factor)
+        level2 = mid_price - (adr * adr_factor * 2)
+        level3 = mid_price + (adr * adr_factor)
+        level4 = mid_price + (adr * adr_factor * 2)
+        
+        # Risk management - reduce position sizes when approaching limits
+        risk_factor = min(1.0, (0.8 * limit - abs(position)) / (0.8 * limit))
+        risk_factor = max(0.2, risk_factor)  # At least 20% of normal size
+        
+        # ===== STRATEGY COMPONENTS =====
+        
+        # 1. ORDER BOOK IMBALANCE STRATEGY
+        imbalance_threshold = 0.2
+        if imbalance > imbalance_threshold and position < limit * 0.8:
+            # Strong buying pressure, go long
+            price = best_bid + 1
+            size = max(1, int(vol_adjusted_size * risk_factor * min(1.0, imbalance * 2)))
+            buy_capacity = limit - position
+            if buy_capacity > 0:
+                orders.append(Order(symbol, price, min(size, buy_capacity)))
+        
+        elif imbalance < -imbalance_threshold and position > -limit * 0.8:
+            # Strong selling pressure, go short
+            price = best_ask - 1
+            size = max(1, int(vol_adjusted_size * risk_factor * min(1.0, -imbalance * 2)))
+            sell_capacity = limit + position
+            if sell_capacity > 0:
+                orders.append(Order(symbol, price, -min(size, sell_capacity)))
+        
+        # 2. MULTI-LEVEL LIQUIDITY PROVISION STRATEGY
+        # Calculate remaining capacity
+        buy_capacity = limit - position
+        sell_capacity = limit + position
+        
+        # Size scaling by level
+        level1_size = max(1, int(vol_adjusted_size * risk_factor * 0.5))
+        level2_size = max(1, int(vol_adjusted_size * risk_factor))
+        
+        # Provide liquidity at multiple levels if we have capacity
+        if buy_capacity > 0:
+            if int(level1) < best_bid:  # Ensure we don't cross the spread
+                orders.append(Order(symbol, int(level1), min(level1_size, buy_capacity)))
+                buy_capacity -= level1_size
+                
+            if buy_capacity > 0 and int(level2) < int(level1):
+                orders.append(Order(symbol, int(level2), min(level2_size, buy_capacity)))
+        
+        if sell_capacity > 0:
+            if int(level3) > best_ask:  # Ensure we don't cross the spread
+                orders.append(Order(symbol, int(level3), -min(level1_size, sell_capacity)))
+                sell_capacity -= level1_size
+                
+            if sell_capacity > 0 and int(level4) > int(level3):
+                orders.append(Order(symbol, int(level4), -min(level2_size, sell_capacity)))
+        
+        # 3. MEAN REVERSION FOR EXTREME MOVES
+        lookback = min(50, len(self.djembe_prices))
+        short_ma = np.mean(self.djembe_prices[-10:])
+        long_ma = np.mean(self.djembe_prices[-lookback:])
+        
+        # Only act on significant deviations
+        if short_ma < long_ma * 0.95 and position < limit * 0.5:
+            # Significantly below MA, buy opportunity
+            price = best_bid + 1
+            size = max(1, int(vol_adjusted_size * risk_factor * 1.5))
+            if buy_capacity > 0:
+                orders.append(Order(symbol, price, min(size, buy_capacity)))
+                
+        elif short_ma > long_ma * 1.05 and position > -limit * 0.5:
+            # Significantly above MA, sell opportunity
+            price = best_ask - 1
+            size = max(1, int(vol_adjusted_size * risk_factor * 1.5))
+            if sell_capacity > 0:
+                orders.append(Order(symbol, price, -min(size, sell_capacity)))
+        
+        return orders
+    
+    def picnic_basket_1_strategy(self, order_depth: OrderDepth, state: TradingState):
+        # This strategy should consider the limits and the current order depth
+        orders = []
+
+        # get expected price of basket (6x croissants, 3x jams, 1x djembe)
+        croissant_best_bid = max(state.order_depths["CROISSANTS"].buy_orders.keys())
+        croissant_best_ask = min(state.order_depths["CROISSANTS"].sell_orders.keys())
+        croissant_price = (croissant_best_ask + croissant_best_bid) / 2
+
+        jam_best_bid = max(state.order_depths["JAMS"].buy_orders.keys())
+        jam_best_ask = min(state.order_depths["JAMS"].sell_orders.keys())
+        jam_price = (jam_best_ask + jam_best_bid) / 2
+
+        djembe_best_bid = max(state.order_depths["DJEMBES"].buy_orders.keys())
+        djembe_best_ask = min(state.order_depths["DJEMBES"].sell_orders.keys())
+        djembe_price = (djembe_best_ask + djembe_best_bid) / 2
+
+        # calculate expected price of basket
+        expected_basket_price = (6 * croissant_price) + (3 * jam_price) + djembe_price
+
+        best_ask = min(order_depth.sell_orders.keys())
+        best_bid = max(order_depth.buy_orders.keys())
+
+        best_bid_volume = order_depth.buy_orders[best_bid]
+        best_ask_volume = order_depth.sell_orders[best_ask]
+
+        threshold = 0.001
+        if best_ask < expected_basket_price * (1 - threshold):
+            # buy basket
+            quantity = min(self.picnic_basket_1_limit, best_ask_volume)
+            orders.append(Order("PICNIC_BASKET1", best_ask, quantity))
+        elif best_bid > expected_basket_price * (1 + threshold):
+            # sell basket
+            quantity = min(self.picnic_basket_1_limit, best_bid_volume)
+            orders.append(Order("PICNIC_BASKET1", best_bid, -quantity))
+
+        return orders
+
     def run(self, state: TradingState):
         result = {}
 
@@ -388,22 +722,25 @@ class Trader:
             self.timeframe_data = trader_data.get("timeframe_data", self.timeframe_data)
 
         if "RAINFOREST_RESIN" in state.order_depths:
-        #     # result["RAINFOREST_RESIN"] = self.resin_orders(state.order_depths["RAINFOREST_RESIN"], 2, state)
             result["RAINFOREST_RESIN"] = self.resin_strategy(state.order_depths["RAINFOREST_RESIN"], 2, state)
 
         if "KELP" in state.order_depths:
             result["KELP"] = self.kelp_strategy(state.order_depths["KELP"], state)
         
-        if "SQUID_INK" in state.order_depths:
-            result["SQUID_INK"] = self.squidink_strategy(state.order_depths["SQUID_INK"], state)
+        # if "SQUID_INK" in state.order_depths:
+        #     result["SQUID_INK"] = self.squidink_strategy(state.order_depths["SQUID_INK"], state)
+        
         # if "JAMS" in state.order_depths:
         #     result["JAMS"] = self.jams_strategy(state.order_depths["JAMS"], state)
 
         if "CROISSANTS" in state.order_depths:
             result["CROISSANTS"] = self.croissants_strategy(state.order_depths["CROISSANTS"], state)
 
-        # if "DJEMBE" in state.order_depths:
-        #     result["DJEMBE"] = self.djembe_strategy(state.order_depths["DJEMBE"], state)
+        if "DJEMBES" in state.order_depths:
+            result["DJEMBES"] = self.djembe_strategy(state.order_depths["DJEMBES"], state)
+
+        if "PICNIC_BASKET1" in state.order_depths:
+            result["PICNIC_BASKET1"] = self.picnic_basket_1_strategy(state.order_depths["PICNIC_BASKET1"], state)
 
         trader_data = {
             "kelp_price_history": self.kelp_price_history,

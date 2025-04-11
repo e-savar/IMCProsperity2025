@@ -287,21 +287,37 @@ class Trader:
         if len(self.squid_prices) < self.squid_window:
             return orders
 
-        mean = np.mean(self.squid_prices)
-        std = np.std(self.squid_prices) + 1e-9
+        prices = np.array(self.squid_prices)
+
+        # === Feature Engineering ===
+        short_ma = np.mean(prices[-5:])
+        long_ma = np.mean(prices[-15:]) if len(prices) >= 15 else short_ma
+        mean = np.mean(prices[-10:])
+        std = np.std(prices[-10:]) + 1e-9
         z_score = (mid_price - mean) / std
 
-        # Short Signal
-        if z_score > self.squid_upper_z:
-            volume = min(order_depth.buy_orders.get(best_bid, 0), position_limit - position)
-            if volume > 0:
-                orders.append(Order(product, best_bid, -volume))
+        # === Strategy Signal ===
+        signal = 0
+        if short_ma > long_ma:
+            signal = 1
+        elif short_ma < long_ma:
+            signal = -1
 
-        # Long Signal
-        elif z_score < self.squid_lower_z:
-            volume = min(order_depth.sell_orders.get(best_ask, 0), position_limit + position)
+        if z_score > 2:
+            signal = -1  # overbought
+        elif z_score < -2:
+            signal = 1   # oversold
+
+        # === Trading Logic ===
+        if signal == 1:
+            volume = min(order_depth.sell_orders.get(best_ask, 0), position_limit - position)
             if volume > 0:
-                orders.append(Order(product, best_ask, volume))
+                orders.append(Order(product, best_ask, volume))  # Buy
+
+        elif signal == -1:
+            volume = min(order_depth.buy_orders.get(best_bid, 0), position_limit + position)
+            if volume > 0:
+                orders.append(Order(product, best_bid, -volume))  # Sell
 
         return orders
 

@@ -13,17 +13,16 @@ class Trader:
         self.kelp_price_history = []
         self.lookback_window_kelp = 100
         self.min_history_length_kelp = 20
-        self.z_threshold_kelp = 1.5
-        self.ewma_alpha_kelp = 0.1
+        self.z_threshold_kelp = 1.3
+        self.ewma_alpha_kelp = 0.2
         self.ewma_mean_kelp = None
         self.ewma_var_kelp = None
-        self.bollinger_width_kelp = 2.0
+        self.bollinger_width_kelp = 2
         self.kelp_last_prices = []
         self.momentum_window_kelp = 5
         self.momentum_weight_kelp = 0.3
         self.weighted_alpha = 0.7  # For weighted moving average
         self.volatility_window = 15  # For volatility calculation
-        self.bollinger_width_kelp = 2.0  # For Bollinger Bands
 
         # JAMS parameters
         self.jams_position_limit = 350
@@ -314,8 +313,8 @@ class Trader:
             z_score = (current_deviation - mean_deviation) / std_deviation
 
         # === Adjust spread based on z-score ===
-        base_spread = 15  # base spread
-        spread_sensitivity = 12  # controls how aggressively spread increases with z-score
+        base_spread = 9  # base spread
+        spread_sensitivity = 5  # controls how aggressively spread increases with z-score
 
         # Calculate the spread based on the z-score
         spread = base_spread + spread_sensitivity * z_score
@@ -530,29 +529,29 @@ class Trader:
             self.kelp_last_prices = trader_data.get("kelp_last_prices", self.kelp_last_prices)
             self.timeframe_data = trader_data.get("timeframe_data", self.timeframe_data)
 
-        # if "RAINFOREST_RESIN" in state.order_depths:
-        #     result["RAINFOREST_RESIN"] = self.resin_strategy(state.order_depths["RAINFOREST_RESIN"], 2, state)
+        if "RAINFOREST_RESIN" in state.order_depths:
+            result["RAINFOREST_RESIN"] = self.resin_strategy(state.order_depths["RAINFOREST_RESIN"], 2, state)
 
-        # if "KELP" in state.order_depths:
-        #     result["KELP"] = self.kelp_strategy(state.order_depths["KELP"], state)
+        if "KELP" in state.order_depths:
+            result["KELP"] = self.kelp_strategy(state.order_depths["KELP"], state)
         
-        # if "SQUID_INK" in state.order_depths:
-        #     result["SQUID_INK"] = self.squidink_strategy(state.order_depths["SQUID_INK"], state)
+        if "SQUID_INK" in state.order_depths:
+            result["SQUID_INK"] = self.squidink_strategy(state.order_depths["SQUID_INK"], state)
         
         if "JAMS" in state.order_depths:
             result["JAMS"] = self.jams_strategy(state.order_depths["JAMS"], state)
 
-        # if "CROISSANTS" in state.order_depths:
-        #     result["CROISSANTS"] = self.croissants_strategy(state.order_depths["CROISSANTS"], state)
+        if "CROISSANTS" in state.order_depths:
+            result["CROISSANTS"] = self.croissants_strategy(state.order_depths["CROISSANTS"], state)
 
-        # # if "DJEMBES" in state.order_depths:
-        # #     result["DJEMBES"] = self.djembes_strategy(state.order_depths["DJEMBES"], state)
+        # if "DJEMBES" in state.order_depths:
+        #     result["DJEMBES"] = self.djembes_strategy(state.order_depths["DJEMBES"], state)
 
-        # if "PICNIC_BASKET1" in state.order_depths:
-        #     result["PICNIC_BASKET1"] = self.picnic_basket_1_strategy(state.order_depths["PICNIC_BASKET1"], state)
+        if "PICNIC_BASKET1" in state.order_depths:
+            result["PICNIC_BASKET1"] = self.picnic_basket_1_strategy(state.order_depths["PICNIC_BASKET1"], state)
 
-        # if "PICNIC_BASKET2" in state.order_depths:
-        #     result["PICNIC_BASKET2"] = self.picnic_basket_2_strategy(state.order_depths["PICNIC_BASKET2"], state)
+        if "PICNIC_BASKET2" in state.order_depths:
+            result["PICNIC_BASKET2"] = self.picnic_basket_2_strategy(state.order_depths["PICNIC_BASKET2"], state)
         
         trader_data = {
             "kelp_price_history": self.kelp_price_history,

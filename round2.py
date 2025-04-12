@@ -62,8 +62,10 @@ class Trader:
 
         # DJEMBES parameters
         self.djembe_position_limit = 60
-        self.djembe_prices = []
-        self.djembe_window = 10
+        self.djembe_theoretical_prices = []
+        self.djembe_actual_prices = []
+        self.djembe_window = 20  # Lookback window size
+        self.djembe_position_limit = 20  # Position limit, adjust as needed
 
         # PICNIC_BASKET_1 parameters
         # contain 6 croissants, 3 jams, 1 DJEMBES
@@ -338,8 +340,109 @@ class Trader:
         return orders
 
     def djembes_strategy(self, order_depth: OrderDepth, state: TradingState) -> List[Order]:
-        pass
-    
+        orders = []
+        product = "DJEMBES"  # Corrected product name
+        basket1 = "PICNIC_BASKET1"
+        basket2 = "PICNIC_BASKET2"
+        position = state.position.get(product, 0)
+        position_limit = 60  # Specified position limit
+        
+        # Check if we have all required products in order depths
+        if basket1 not in state.order_depths or basket2 not in state.order_depths:
+            return orders
+        
+        # Get depths for baskets
+        b1_depth = state.order_depths[basket1]
+        b2_depth = state.order_depths[basket2]
+        
+        # Check if we have both bids and asks for both baskets
+        if (not b1_depth.buy_orders or not b1_depth.sell_orders or
+            not b2_depth.buy_orders or not b2_depth.sell_orders or
+            not order_depth.buy_orders or not order_depth.sell_orders):
+            return orders
+        
+        # Get mid prices
+        b1_best_bid = max(b1_depth.buy_orders.keys())
+        b1_best_ask = min(b1_depth.sell_orders.keys())
+        b1_mid = (b1_best_bid + b1_best_ask) / 2
+        
+        b2_best_bid = max(b2_depth.buy_orders.keys())
+        b2_best_ask = min(b2_depth.sell_orders.keys())
+        b2_mid = (b2_best_bid + b2_best_ask) / 2
+        
+        dj_best_bid = max(order_depth.buy_orders.keys())
+        dj_best_ask = min(order_depth.sell_orders.keys())
+        dj_mid = (dj_best_bid + dj_best_ask) / 2
+        
+        # Calculate theoretical DJEMBES price using the formula
+        # 2 * Price(Basket1) - 3 * Price(Basket2) = 2 * Price(DJEMBES)
+        # Therefore: DJEMBES_theoretical = (2 * Price(Basket1) - 3 * Price(Basket2)) / 2
+        dj_theoretical = (2 * b1_mid - 3 * b2_mid) / 2
+        
+        # Add theoretical price to history
+        if not hasattr(self, 'djembes_theoretical_prices'):
+            self.djembes_theoretical_prices = []
+            self.djembes_actual_prices = []
+            self.djembes_window = 20  # Default window size
+        
+        self.djembes_theoretical_prices.append(dj_theoretical)
+        self.djembes_actual_prices.append(dj_mid)
+        
+        # Keep only the recent window of prices
+        if len(self.djembes_theoretical_prices) > self.djembes_window:
+            self.djembes_theoretical_prices.pop(0)
+            self.djembes_actual_prices.pop(0)
+        
+        # Price difference between theoretical and actual
+        price_diff = dj_theoretical - dj_mid
+        
+        # Simple threshold-based trading with fixed thresholds
+        buy_threshold = 3
+        sell_threshold = 3
+        
+        # Base order size
+        order_size = 20
+        
+        # Trading logic
+        if price_diff > buy_threshold:
+            # DJEMBES is undervalued based on basket prices
+            if position < position_limit:
+                buy_volume = min(order_size, position_limit - position)
+                # Place a buy order at the best bid or slightly higher
+                buy_price = dj_best_bid  # Try matching the current best bid first
+                orders.append(Order(product, buy_price, buy_volume))
+        elif price_diff < -sell_threshold:
+            # DJEMBES is overvalued based on basket prices
+            if position > -position_limit:
+                sell_volume = min(order_size, position_limit + position)
+                # Place sell order at the best ask or slightly lower
+                sell_price = dj_best_ask  # Try matching the current best ask first
+                orders.append(Order(product, sell_price, -sell_volume))
+        
+        # Add simple market making if no arbitrage opportunity detected
+        if not orders and len(self.djembes_theoretical_prices) > 5:
+            spread = 2  # Tight spread for market making
+            
+            if position < position_limit:
+                bid_price = int(dj_theoretical - spread)
+                # Make sure our bid is not above the best ask
+                if bid_price >= dj_best_ask:
+                    bid_price = dj_best_ask - 1
+                
+                buy_volume = min(5, position_limit - position)
+                if bid_price > 0:  # Ensure we're not bidding at negative prices
+                    orders.append(Order(product, bid_price, buy_volume))
+            
+            if position > -position_limit:
+                ask_price = int(dj_theoretical + spread)
+                # Make sure our ask is not below the best bid
+                if ask_price <= dj_best_bid:
+                    ask_price = dj_best_bid + 1
+                    
+                sell_volume = min(5, position_limit + position)
+                orders.append(Order(product, ask_price, -sell_volume))
+        
+        return orders
     def jams_strategy(self, order_depth: OrderDepth, state: TradingState) -> List[Order]:
         orders = []
         product = "JAMS"
@@ -514,52 +617,58 @@ class Trader:
 
     def run(self, state: TradingState):
         result = {}
-
+        
         trader_data = {}
         if state.traderData:
             try:
                 trader_data = jsonpickle.decode(state.traderData)
             except Exception:
                 trader_data = {}
-
+        
         if trader_data:
             self.kelp_price_history = trader_data.get("kelp_price_history", self.kelp_price_history)
             self.ewma_mean_kelp = trader_data.get("ewma_mean_kelp", self.ewma_mean_kelp)
             self.ewma_var_kelp = trader_data.get("ewma_var_kelp", self.ewma_var_kelp)
             self.kelp_last_prices = trader_data.get("kelp_last_prices", self.kelp_last_prices)
             self.timeframe_data = trader_data.get("timeframe_data", self.timeframe_data)
-
+            # Add retrieving DJEMBE data
+            self.djembe_theoretical_prices = trader_data.get("djembe_theoretical_prices", self.djembe_theoretical_prices)
+            self.djembe_actual_prices = trader_data.get("djembe_actual_prices", self.djembe_actual_prices)
+        
         if "RAINFOREST_RESIN" in state.order_depths:
             result["RAINFOREST_RESIN"] = self.resin_strategy(state.order_depths["RAINFOREST_RESIN"], 2, state)
-
+        
         if "KELP" in state.order_depths:
             result["KELP"] = self.kelp_strategy(state.order_depths["KELP"], state)
-        
+                
         if "SQUID_INK" in state.order_depths:
             result["SQUID_INK"] = self.squidink_strategy(state.order_depths["SQUID_INK"], state)
-        
+                
         if "JAMS" in state.order_depths:
             result["JAMS"] = self.jams_strategy(state.order_depths["JAMS"], state)
-
+        
         if "CROISSANTS" in state.order_depths:
             result["CROISSANTS"] = self.croissants_strategy(state.order_depths["CROISSANTS"], state)
-
-        # if "DJEMBES" in state.order_depths:
-        #     result["DJEMBES"] = self.djembes_strategy(state.order_depths["DJEMBES"], state)
-
+        
+        if "DJEMBES" in state.order_depths: 
+            result["DJEMBES"] = self.djembes_strategy(state.order_depths["DJEMBES"], state)
+        
         if "PICNIC_BASKET1" in state.order_depths:
             result["PICNIC_BASKET1"] = self.picnic_basket_1_strategy(state.order_depths["PICNIC_BASKET1"], state)
-
+        
         if "PICNIC_BASKET2" in state.order_depths:
             result["PICNIC_BASKET2"] = self.picnic_basket_2_strategy(state.order_depths["PICNIC_BASKET2"], state)
-        
+                
         trader_data = {
             "kelp_price_history": self.kelp_price_history,
             "ewma_mean_kelp": self.ewma_mean_kelp,
             "ewma_var_kelp": self.ewma_var_kelp,
             "kelp_last_prices": self.kelp_last_prices,
-            "timeframe_data": self.timeframe_data
+            "timeframe_data": self.timeframe_data,
+            # Add storing DJEMBE data
+            "djembe_theoretical_prices": self.djembe_theoretical_prices,
+            "djembe_actual_prices": self.djembe_actual_prices
         }
-
+        
         return result, 0, jsonpickle.encode(trader_data)
     

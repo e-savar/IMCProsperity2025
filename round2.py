@@ -6,122 +6,6 @@ import numpy as np
 import math
 import json
 
-class Logger:
-    def __init__(self) -> None:
-        self.logs = ""
-        self.max_log_length = 3750
-
-    def print(self, *objects: Any, sep: str = " ", end: str = "\n") -> None:
-        self.logs += sep.join(map(str, objects)) + end
-
-    def flush(self, state: TradingState, orders: dict[Symbol, list[Order]], conversions: int, trader_data: str) -> None:
-        base_length = len(
-            self.to_json(
-                [
-                    self.compress_state(state, ""),
-                    self.compress_orders(orders),
-                    conversions,
-                    "",
-                    "",
-                ]
-            )
-        )
-
-        # We truncate state.traderData, trader_data, and self.logs to the same max. length to fit the log limit
-        max_item_length = (self.max_log_length - base_length) // 3
-
-        print(
-            self.to_json(
-                [
-                    self.compress_state(state, self.truncate(state.traderData, max_item_length)),
-                    self.compress_orders(orders),
-                    conversions,
-                    self.truncate(trader_data, max_item_length),
-                    self.truncate(self.logs, max_item_length),
-                ]
-            )
-        )
-
-        self.logs = ""
-
-    def compress_state(self, state: TradingState, trader_data: str) -> list[Any]:
-        return [
-            state.timestamp,
-            trader_data,
-            self.compress_listings(state.listings),
-            self.compress_order_depths(state.order_depths),
-            self.compress_trades(state.own_trades),
-            self.compress_trades(state.market_trades),
-            state.position,
-            self.compress_observations(state.observations),
-        ]
-
-    def compress_listings(self, listings: dict[Symbol, Listing]) -> list[list[Any]]:
-        compressed = []
-        for listing in listings.values():
-            compressed.append([listing.symbol, listing.product, listing.denomination])
-
-        return compressed
-
-    def compress_order_depths(self, order_depths: dict[Symbol, OrderDepth]) -> dict[Symbol, list[Any]]:
-        compressed = {}
-        for symbol, order_depth in order_depths.items():
-            compressed[symbol] = [order_depth.buy_orders, order_depth.sell_orders]
-
-        return compressed
-
-    def compress_trades(self, trades: dict[Symbol, list[Trade]]) -> list[list[Any]]:
-        compressed = []
-        for arr in trades.values():
-            for trade in arr:
-                compressed.append(
-                    [
-                        trade.symbol,
-                        trade.price,
-                        trade.quantity,
-                        trade.buyer,
-                        trade.seller,
-                        trade.timestamp,
-                    ]
-                )
-
-        return compressed
-
-    def compress_observations(self, observations: Observation) -> list[Any]:
-        conversion_observations = {}
-        for product, observation in observations.conversionObservations.items():
-            conversion_observations[product] = [
-                observation.bidPrice,
-                observation.askPrice,
-                observation.transportFees,
-                observation.exportTariff,
-                observation.importTariff,
-                observation.sugarPrice,
-                observation.sunlightIndex,
-            ]
-
-        return [observations.plainValueObservations, conversion_observations]
-
-    def compress_orders(self, orders: dict[Symbol, list[Order]]) -> list[list[Any]]:
-        compressed = []
-        for arr in orders.values():
-            for order in arr:
-                compressed.append([order.symbol, order.price, order.quantity])
-
-        return compressed
-
-    def to_json(self, value: Any) -> str:
-        return json.dumps(value, cls=ProsperityEncoder, separators=(",", ":"))
-
-    def truncate(self, value: str, max_length: int) -> str:
-        if len(value) <= max_length:
-            return value
-
-        return value[: max_length - 3] + "..."
-
-
-logger = Logger()
-
 class Trader:
     def __init__(self):
 
@@ -139,6 +23,7 @@ class Trader:
         self.momentum_weight_kelp = 0.3
         self.weighted_alpha = 0.7  # For weighted moving average
         self.volatility_window = 15  # For volatility calculation
+        self.volatility_spread_multiplier_kelp = 1.7
 
         # JAMS parameters
         self.jams_position_limit = 350
@@ -246,6 +131,7 @@ class Trader:
         variance = sum((x - mean) ** 2 for x in data) / (len(data) - 1)
         return math.sqrt(variance)
     
+    # permanent
     def resin_strategy(self, order_depth: OrderDepth, width: int, state: TradingState) -> List[Order]:
         orders: List[Order] = []
         buy_order_volume = 0
@@ -316,15 +202,13 @@ class Trader:
         orders: List[Order] = []
         position = state.position.get("KELP", 0)
         position_limit = 50
-        buy_order_volume = 0
-        sell_order_volume = 0
 
         if not order_depth.buy_orders or not order_depth.sell_orders:
             return orders
 
-        best_bid = max(order_depth.buy_orders.keys())
-        best_ask = min(order_depth.sell_orders.keys())
-        mid_price = (best_ask + best_bid) / 2
+        best_bid = max(order_depth.buy_orders)
+        best_ask = min(order_depth.sell_orders)
+        mid_price = (best_bid + best_ask) / 2
 
         self.kelp_price_history.append(mid_price)
         if len(self.kelp_price_history) > self.lookback_window_kelp:
@@ -333,62 +217,39 @@ class Trader:
         self.ewma_mean_kelp, self.ewma_var_kelp = self.update_ewma(
             mid_price, self.ewma_mean_kelp, self.ewma_var_kelp, self.ewma_alpha_kelp
         )
+        fair_value = self.ewma_mean_kelp if self.ewma_mean_kelp else mid_price
+        std_dev = math.sqrt(self.ewma_var_kelp) if self.ewma_var_kelp and self.ewma_var_kelp > 0 else 1
+
+        # INVENTORY-BASED SKEW
+        inventory_skew = -0.2 * position / position_limit  # skew is stronger the closer to position_limit
+
+        # MOMENTUM SKEW (optional)
         self.kelp_last_prices.append(mid_price)
         if len(self.kelp_last_prices) > self.momentum_window_kelp:
             self.kelp_last_prices.pop(0)
-
-        if hasattr(state, 'timestamp'):
-            self.update_timeframe_data(state.timestamp, mid_price, "KELP")
-
-        if len(self.kelp_price_history) < self.min_history_length_kelp:
-            return orders
-
-        simple_mean = sum(self.kelp_price_history) / len(self.kelp_price_history)
-        std_dev = self.calculate_std_dev(self.kelp_price_history, simple_mean)
-        mean_price = self.ewma_mean_kelp if self.ewma_mean_kelp else simple_mean
-        ewma_std_dev = math.sqrt(self.ewma_var_kelp) if self.ewma_var_kelp is not None and self.ewma_var_kelp > 0 else std_dev
-
-        upper_band = mean_price + self.bollinger_width_kelp * ewma_std_dev
-        lower_band = mean_price - self.bollinger_width_kelp * ewma_std_dev
-        z_score = (mid_price - mean_price) / ewma_std_dev if ewma_std_dev > 0 else 0
         momentum = self.kelp_last_prices[-1] - self.kelp_last_prices[0] if len(self.kelp_last_prices) >= 2 else 0
-        adjusted_z = z_score + self.momentum_weight_kelp * (momentum / ewma_std_dev if ewma_std_dev > 0 else 0)
+        momentum_skew = 0.1 * (momentum / std_dev)
 
-        position_bias = int(position_limit * (math.tanh(adjusted_z / self.z_threshold_kelp)))
-        target_position = max(-position_limit, min(position_limit, -position_bias))
+        total_skew = inventory_skew + momentum_skew
 
-        position_diff = target_position - (position + buy_order_volume - sell_order_volume)
+        # DYNAMIC SPREAD (wider when volatile)
+        base_spread = 1.3
+        dynamic_spread = base_spread + std_dev * self.volatility_spread_multiplier_kelp
 
-        if mid_price < lower_band:
-            for ask_price in sorted(order_depth.sell_orders.keys()):
-                if ask_price < mean_price:
-                    available_volume = -order_depth.sell_orders[ask_price]
-                    qty = min(available_volume, position_limit - position - buy_order_volume)
-                    if qty > 0:
-                        orders.append(Order("KELP", ask_price, qty))
-                        buy_order_volume += qty
+        quote_bid = int(fair_value - dynamic_spread / 2 + total_skew)
+        quote_ask = int(fair_value + dynamic_spread / 2 + total_skew)
 
-        if mid_price > upper_band:
-            for bid_price in sorted(order_depth.buy_orders.keys(), reverse=True):
-                if bid_price > mean_price:
-                    available_volume = order_depth.buy_orders[bid_price]
-                    qty = min(available_volume, position_limit + position - sell_order_volume)
-                    if qty > 0:
-                        orders.append(Order("KELP", bid_price, -qty))
-                        sell_order_volume += qty
+        # Determine order sizes (less aggressive when near limits)
+        bid_volume = min(10, position_limit - position)
+        ask_volume = min(10, position_limit + position)
 
-        if position_diff > 0:
-            buy_price = best_bid + 1
-            qty = min(position_diff, position_limit - position - buy_order_volume)
-            if qty > 0:
-                orders.append(Order("KELP", buy_price, qty))
-        elif position_diff < 0:
-            sell_price = best_ask - 1
-            qty = min(-position_diff, position_limit + position - sell_order_volume)
-            if qty > 0:
-                orders.append(Order("KELP", sell_price, -qty))
+        if bid_volume > 0:
+            orders.append(Order("KELP", quote_bid, bid_volume))
+        if ask_volume > 0:
+            orders.append(Order("KELP", quote_ask, -ask_volume))
 
         return orders
+
     
     def squidink_strategy(self, order_depth: OrderDepth, state: TradingState) -> List[Order]:
         orders = []
@@ -814,29 +675,29 @@ class Trader:
             self.djembe_theoretical_prices = trader_data.get("djembe_theoretical_prices", self.djembe_theoretical_prices)
             self.djembe_actual_prices = trader_data.get("djembe_actual_prices", self.djembe_actual_prices)
         
-        if "RAINFOREST_RESIN" in state.order_depths:
-            result["RAINFOREST_RESIN"] = self.resin_strategy(state.order_depths["RAINFOREST_RESIN"], 2, state)
+        # if "RAINFOREST_RESIN" in state.order_depths:
+        #     result["RAINFOREST_RESIN"] = self.resin_strategy(state.order_depths["RAINFOREST_RESIN"], 2, state)
         
         if "KELP" in state.order_depths:
             result["KELP"] = self.kelp_strategy(state.order_depths["KELP"], state)
                 
-        if "SQUID_INK" in state.order_depths:
-            result["SQUID_INK"] = self.squidink_strategy(state.order_depths["SQUID_INK"], state)
+        # if "SQUID_INK" in state.order_depths:
+        #     result["SQUID_INK"] = self.squidink_strategy(state.order_depths["SQUID_INK"], state)
                 
-        if "JAMS" in state.order_depths:
-            result["JAMS"] = self.jams_strategy(state.order_depths["JAMS"], state)
+        # if "JAMS" in state.order_depths:
+        #     result["JAMS"] = self.jams_strategy(state.order_depths["JAMS"], state)
         
-        if "CROISSANTS" in state.order_depths:
-            result["CROISSANTS"] = self.croissants_strategy(state.order_depths["CROISSANTS"], state)
+        # if "CROISSANTS" in state.order_depths:
+        #     result["CROISSANTS"] = self.croissants_strategy(state.order_depths["CROISSANTS"], state)
         
-        if "DJEMBES" in state.order_depths: 
-            result["DJEMBES"] = self.djembes_strategy(state.order_depths["DJEMBES"], state)
+        # if "DJEMBES" in state.order_depths: 
+        #     result["DJEMBES"] = self.djembes_strategy(state.order_depths["DJEMBES"], state)
         
-        if "PICNIC_BASKET1" in state.order_depths:
-            result["PICNIC_BASKET1"] = self.picnic_basket_1_strategy(state.order_depths["PICNIC_BASKET1"], state)
+        # if "PICNIC_BASKET1" in state.order_depths:
+        #     result["PICNIC_BASKET1"] = self.picnic_basket_1_strategy(state.order_depths["PICNIC_BASKET1"], state)
         
-        if "PICNIC_BASKET2" in state.order_depths:
-            result["PICNIC_BASKET2"] = self.picnic_basket_2_strategy(state.order_depths["PICNIC_BASKET2"], state)
+        # if "PICNIC_BASKET2" in state.order_depths:
+        #     result["PICNIC_BASKET2"] = self.picnic_basket_2_strategy(state.order_depths["PICNIC_BASKET2"], state)
                 
         trader_data = {
             "kelp_price_history": self.kelp_price_history,
@@ -847,8 +708,6 @@ class Trader:
             "djembe_theoretical_prices": self.djembe_theoretical_prices,
             "djembe_actual_prices": self.djembe_actual_prices
         }
-
-        logger.flush(state, result, conversions, trader_data)
         
-        return result, 0, jsonpickle.encode(trader_data)
+        return result, conversions, jsonpickle.encode(trader_data)
     

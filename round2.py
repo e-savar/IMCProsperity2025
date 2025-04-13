@@ -27,10 +27,21 @@ class Trader:
 
         # JAMS parameters
         self.jams_position_limit = 350
-        self.jams_prices = []
-        self.jams_window = 10
-        self.jams_upper_z = 1.3
-        self.jams_lower_z = -1.3 
+        self.jams_price_history = []
+        self.lookback_window_jams = 100
+        self.min_history_length_jams = 20
+        self.z_threshold_jams = 1.3
+        self.ewma_alpha_jams = 0.2
+        self.ewma_mean_jams = None
+        self.ewma_var_jams = None
+        self.bollinger_width_jams = 2
+        self.jams_last_prices = []
+        self.momentum_window_jams = 5
+        self.momentum_weight_jams = 0.3
+        self.weighted_alpha = 0.7  # For weighted moving average
+        self.volatility_window = 15  # For volatility calculation
+        self.volatility_spread_multiplier_jams = 1.7
+
 
         # RAINFOREST_RESIN parameters
         self.resin_fair_value = 10000
@@ -439,78 +450,61 @@ class Trader:
         return orders
 
     def jams_strategy(self, order_depth: OrderDepth, state: TradingState) -> List[Order]:
-            orders = []
-            product = "JAMS"
-            position = state.position.get(product, 0)
-            position_limit = self.jams_position_limit
+        orders: List[Order] = []
+        product = "JAMS"
+        position = state.position.get(product, 0)
+        position_limit = self.jams_position_limit
 
-            if not order_depth.buy_orders or not order_depth.sell_orders:
-                return orders
-
-            best_bid = max(order_depth.buy_orders.keys())
-            best_ask = min(order_depth.sell_orders.keys())
-
-            if best_bid is None or best_ask is None:
-                return orders
-
-            mid_price = (best_bid + best_ask) / 2
-            self.jams_prices.append(mid_price)
-
-            if len(self.jams_prices) > self.jams_window:
-                self.jams_prices.pop(0)
-
-            if len(self.jams_prices) < self.jams_window:
-                return orders
-
-            fair_price = np.mean(self.jams_prices[-self.jams_window:])
-            price_array = np.array(self.jams_prices[-self.jams_window:])
-            time_array = np.arange(len(price_array))
-            slope, _ = np.polyfit(time_array, price_array, 1)
-
-            momentum_bias_factor = 1.5 #conservative?
-            fair_price += max(0, momentum_bias_factor * slope)  
-
-            # limit volatility
-            volatility = np.std(price_array)
-            max_volatility = 3 
-            if volatility > max_volatility:
-                return orders  
-
-            price_deviations = np.abs(price_array - fair_price)
-            mean_deviation = np.mean(price_deviations)
-            std_deviation = np.std(price_deviations)
-
-            z_score = 0
-            if std_deviation > 0:
-                current_deviation = abs(mid_price - fair_price)
-                z_score = (current_deviation - mean_deviation) / std_deviation
-
-            base_spread = 16  # too wider?
-            spread_sensitivity = 8
-            spread = base_spread + spread_sensitivity * z_score
-
-            # size scaling
-            max_order_size = 50
-            if slope < 0:
-                order_size = int(max_order_size * (1 + slope))  
-                order_size = max(order_size, 10) 
-            else:
-                order_size = max_order_size
-
-            bid_price = int(fair_price - spread)
-            ask_price = int(fair_price + spread)
-
-            # do not buy avoid buying in strong downtrend
-            if slope >= -0.3 and position < position_limit:
-                buy_volume = min(order_size, position_limit - position)
-                orders.append(Order(product, bid_price, buy_volume))
-
-            if position > -position_limit:
-                sell_volume = min(order_size, position + position_limit)
-                orders.append(Order(product, ask_price, -sell_volume))
-
+        if not order_depth.buy_orders or not order_depth.sell_orders:
             return orders
-    
+
+        best_bid = max(order_depth.buy_orders)
+        best_ask = min(order_depth.sell_orders)
+        mid_price = (best_bid + best_ask) / 2
+
+        # Track price history
+        self.jams_price_history.append(mid_price)
+        if len(self.jams_price_history) > self.lookback_window_jams:
+            self.jams_price_history.pop(0)
+
+        # EWMA mean & variance update
+        self.ewma_mean_jams, self.ewma_var_jams = self.update_ewma(
+            mid_price, self.ewma_mean_jams, self.ewma_var_jams, self.ewma_alpha_jams
+        )
+        fair_value = self.ewma_mean_jams if self.ewma_mean_jams else mid_price
+        std_dev = math.sqrt(self.ewma_var_jams) if self.ewma_var_jams and self.ewma_var_jams > 0 else 1
+
+        # Inventory-based skew
+        inventory_skew = -0.25 * position / position_limit
+
+        # Momentum skew based on price change
+        self.jams_last_prices.append(mid_price)
+        if len(self.jams_last_prices) > self.momentum_window_jams:
+            self.jams_last_prices.pop(0)
+        momentum = self.jams_last_prices[-1] - self.jams_last_prices[0] if len(self.jams_last_prices) >= 2 else 0
+        momentum_skew = .75 * (momentum / std_dev)
+
+        total_skew = inventory_skew + momentum_skew
+
+        # Dynamic spread
+        base_spread = 1.5
+        dynamic_spread = base_spread + std_dev * self.volatility_spread_multiplier_jams
+
+        # Final quote prices
+        quote_bid = int(fair_value - dynamic_spread / 2 + total_skew)
+        quote_ask = int(fair_value + dynamic_spread / 2 + total_skew)
+
+        # Position-aware sizing
+        bid_volume = min(10, position_limit - position)
+        ask_volume = min(10, position_limit + position)
+
+        if bid_volume > 0:
+            orders.append(Order(product, quote_bid, bid_volume))
+        if ask_volume > 0:
+            orders.append(Order(product, quote_ask, -ask_volume))
+
+        return orders
+
     def croissants_strategy(self, order_depth: OrderDepth, state: TradingState) -> List[Order]:
         orders = []
         symbol = "CROISSANTS"
@@ -670,6 +664,10 @@ class Trader:
             self.ewma_mean_squid = trader_data.get("ewma_mean_squid", self.ewma_mean_squid)
             self.ewma_var_squid = trader_data.get("ewma_var_squid", self.ewma_var_squid)
             self.squid_last_prices = trader_data.get("squid_last_prices", self.squid_last_prices)
+            self.jams_price_history = trader_data.get("jams_price_history", self.jams_price_history)
+            self.ewma_mean_jams = trader_data.get("ewma_mean_jams", self.ewma_mean_jams)
+            self.ewma_var_jams = trader_data.get("ewma_var_jams", self.ewma_var_jams)
+            self.jams_last_prices = trader_data.get("jams_last_prices", self.jams_last_prices)
         
         # if "RAINFOREST_RESIN" in state.order_depths:
         #     result["RAINFOREST_RESIN"] = self.resin_strategy(state.order_depths["RAINFOREST_RESIN"], 2, state)
@@ -677,11 +675,11 @@ class Trader:
         # if "KELP" in state.order_depths:
         #     result["KELP"] = self.kelp_strategy(state.order_depths["KELP"], state)
                 
-        if "SQUID_INK" in state.order_depths:
-            result["SQUID_INK"] = self.squidink_strategy(state.order_depths["SQUID_INK"], state)
+        # if "SQUID_INK" in state.order_depths:
+        #     result["SQUID_INK"] = self.squidink_strategy(state.order_depths["SQUID_INK"], state)
                 
-        # if "JAMS" in state.order_depths:
-        #     result["JAMS"] = self.jams_strategy(state.order_depths["JAMS"], state)
+        if "JAMS" in state.order_depths:
+            result["JAMS"] = self.jams_strategy(state.order_depths["JAMS"], state)
         
         # if "CROISSANTS" in state.order_depths:
         #     result["CROISSANTS"] = self.croissants_strategy(state.order_depths["CROISSANTS"], state)
@@ -707,6 +705,11 @@ class Trader:
             "ewma_mean_squid": self.ewma_mean_squid,
             "ewma_var_squid": self.ewma_var_squid,
             "squid_last_prices": self.squid_last_prices,
+            "jams_price_history": self.jams_price_history,
+            "ewma_mean_jams": self.ewma_mean_jams,
+            "ewma_var_jams": self.ewma_var_jams,
+            "jams_last_prices": self.jams_last_prices,
+
         }
         
         return result, conversions, jsonpickle.encode(trader_data)

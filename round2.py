@@ -390,80 +390,71 @@ class Trader:
 
         return orders
     
-
     def squidink_strategy(self, order_depth: OrderDepth, state: TradingState) -> List[Order]:
         orders = []
         product = "SQUID_INK"
         position = state.position.get(product, 0)
         position_limit = self.squid_position_limit
 
-        # Ensure order depth has buy and sell orders
         if not order_depth.buy_orders or not order_depth.sell_orders:
             return orders
 
-        # Get best bid and ask prices
-        best_bid = max(order_depth.buy_orders.keys(), default=None)
-        best_ask = min(order_depth.sell_orders.keys(), default=None)
+        best_bid = max(order_depth.buy_orders.keys())
+        best_ask = min(order_depth.sell_orders.keys())
 
         if best_bid is None or best_ask is None:
             return orders
 
-        # Calculate the mid-price (fair value estimate)
+        # Use mid-price as fair value estimate
         mid_price = (best_bid + best_ask) / 2
         self.squid_prices.append(mid_price)
 
-        # Keep only the last 'squid_window' prices
         if len(self.squid_prices) > self.squid_window:
             self.squid_prices.pop(0)
 
-        # If there aren't enough prices, do nothing
         if len(self.squid_prices) < self.squid_window:
             return orders
 
-        # Mean-reversion fair price (moving average of mid-prices)
-        fair_price = np.mean(self.squid_prices)
+        # Mean-reversion fair price based on moving average of mid-prices
+        fair_price = np.mean(self.squid_prices[-self.squid_window:])
 
-        # Calculate price deviations from the fair price
-        price_deviations = np.abs(np.array(self.squid_prices) - fair_price)
+        # === Calculate price deviations and z-score ===
+        price_deviations = np.array([abs(price - fair_price) for price in self.squid_prices[-self.squid_window:]])
         mean_deviation = np.mean(price_deviations)
         std_deviation = np.std(price_deviations)
 
-        # Handle the case of no variation (std_deviation == 0)
         if std_deviation == 0:
-            z_score = 0
+            z_score = 0  # If no variation, default z-score to 0
         else:
             # Z-score for current price deviation
             current_deviation = abs(mid_price - fair_price)
             z_score = (current_deviation - mean_deviation) / std_deviation
 
-        # Adjust spread based on z-score, making the spread more sensitive to high deviations
-        base_spread = 7
-        spread_sensitivity = 5  # Adjust how aggressively the spread changes
+        # === Adjust spread based on z-score ===
+        base_spread = 9  # base spread
+        spread_sensitivity = 5  # controls how aggressively spread increases with z-score
+
+        # Calculate the spread based on the z-score
         spread = base_spread + spread_sensitivity * z_score
 
-        # Ensure the spread is non-negative
-        spread = max(spread, 0)
+        # Ensure that spread is non-negative (avoid negative spreads)
 
-        # Market making: determine bid and ask prices based on spread
+        # Market making quotes
+        order_size = 50  # fixed market making size
         bid_price = int(fair_price - spread)
         ask_price = int(fair_price + spread)
 
-        # Set order size for market making
-        order_size = 50
-
-        # Check position and enforce limits before placing orders
+        # Enforce position limits
         if position < position_limit:
             buy_volume = min(order_size, position_limit - position)
-            if buy_volume > 0:
-                orders.append(Order(product, bid_price, buy_volume))
+            orders.append(Order(product, bid_price, buy_volume))
 
         if position > -position_limit:
             sell_volume = min(order_size, position + position_limit)
-            if sell_volume > 0:
-                orders.append(Order(product, ask_price, -sell_volume))
+            orders.append(Order(product, ask_price, -sell_volume))
 
         return orders
-
+    
     def djembes_strategy(self, order_depth: OrderDepth, state: TradingState) -> List[Order]:
         orders = []
         product = "DJEMBES"  # Corrected product name
@@ -667,45 +658,67 @@ class Trader:
 
             return orders
     
-    def croissants_strategy(self, order_depth: OrderDepth, state: TradingState):
+    def croissants_strategy(self, order_depth: OrderDepth, state: TradingState) -> List[Order]:
+        orders = []
         symbol = "CROISSANTS"
         position = state.position.get(symbol, 0)
         limit = self.croissant_position_limit
-        orders = []
 
+        # Ensure there are valid buy and sell orders
         if not order_depth.buy_orders or not order_depth.sell_orders:
             return orders
 
-        best_bid = max(order_depth.buy_orders)
-        best_ask = min(order_depth.sell_orders)
+        # Get the best bid and ask prices
+        best_bid = max(order_depth.buy_orders.keys(), default=None)
+        best_ask = min(order_depth.sell_orders.keys(), default=None)
+
+        if best_bid is None or best_ask is None:
+            return orders
+
+        # Calculate the mid-price (fair value estimate)
         mid_price = (best_bid + best_ask) / 2
 
-        # Track mid prices
+        # Track mid prices for moving average calculation
         self.croissant_prices.append(mid_price)
+
+        # Keep only the last 'rolling_window' prices
         if len(self.croissant_prices) > self.rolling_window:
             self.croissant_prices.pop(0)
 
+        # If there aren't enough prices, do nothing
         if len(self.croissant_prices) < self.rolling_window:
             return orders
 
-        # === Indicators ===
+        # Calculate moving average of the mid prices
         mean_price = np.mean(self.croissant_prices)
-        spread = 2  # ticks away from mean to quote
-        volume = 5  # order size per level
 
-        # === Market Making Entries ===
+        # === Dynamic Spread Calculation Based on Price Deviations ===
+        price_deviations = np.abs(np.array(self.croissant_prices) - mean_price)
+        mean_deviation = np.mean(price_deviations)
+        std_deviation = np.std(price_deviations)
+
+        # If no variation, use a fixed spread
+        if std_deviation == 0:
+            spread = 2
+        else:
+            # Use mean deviation to adjust spread more conservatively
+            spread = max(2, mean_deviation)  # Use mean deviation for more conservative spread adjustment
+
+        # === Market Making Logic ===
 
         # BUY SIDE
         if position < limit:
             buy_price = int(mean_price - spread)
-            buy_volume = min(volume, limit - position)
-            orders.append(Order(symbol, buy_price, buy_volume))
+            buy_volume = min(5, limit - position)  # 5 is the fixed order size
+            if buy_volume > 0:
+                orders.append(Order(symbol, buy_price, buy_volume))
 
         # SELL SIDE
         if position > -limit:
             sell_price = int(mean_price + spread)
-            sell_volume = min(volume, position + limit)
-            orders.append(Order(symbol, sell_price, -sell_volume))
+            sell_volume = min(5, position + limit)  # 5 is the fixed order size
+            if sell_volume > 0:
+                orders.append(Order(symbol, sell_price, -sell_volume))
 
         return orders
 

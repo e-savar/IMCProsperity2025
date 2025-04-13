@@ -30,12 +30,7 @@ class Trader:
         self.jams_prices = []
         self.jams_window = 10
         self.jams_upper_z = 1.3
-        self.jams_lower_z = -1.3
-        self.squid_ink_weighted_alpha = 0.7  # For weighted moving average
-        self.squid_ink_volatility_window = 15  # For volatility calculation
-        self.squid_ink_bollinger_width= 2.0  # For Bollinger Bands
-        self.squid_volatility_threshold = 0.1  # Volatility threshold for trading decisions
-        
+        self.jams_lower_z = -1.3 
 
         # RAINFOREST_RESIN parameters
         self.resin_fair_value = 10000
@@ -47,15 +42,21 @@ class Trader:
         self.momentum_window = 5
         
         # SQUID_INK strategy parameters
-        self.squid_prices = []
-        self.squid_window = 10
-        self.squid_upper_z = 1.3
-        self.squid_lower_z = -1.3
+        self.squid_price_history = []
+        self.lookback_window_squid = 100
+        self.min_history_length_squid = 20
+        self.z_threshold_squid = 1.3
+        self.ewma_alpha_squid = 0.2
+        self.ewma_mean_squid = None
+        self.ewma_var_squid = None
+        self.bollinger_width_squid = 2
+        self.squid_last_prices = []
+        self.momentum_window_squid = 5
+        self.momentum_weight_squid = 0.3
+        self.weighted_alpha = 0.7  # For weighted moving average
+        self.volatility_window = 15  # For volatility calculation
+        self.volatility_spread_multiplier_squid = 1.7
         self.squid_position_limit = 50
-        self.squid_ink_weighted_alpha = 0.7  # For weighted moving average
-        self.squid_ink_volatility_window = 15  # For volatility calculation
-        self.squid_ink_bollinger_width= 2.0  # For Bollinger Bands
-        self.squid_volatility_threshold = 0.1  # Volatility threshold for trading decisions
 
         # Conversion tracking
         self.prev_timestamp = None
@@ -198,6 +199,7 @@ class Trader:
 
         return orders
 
+    # permanent
     def kelp_strategy(self, order_depth: OrderDepth, state: TradingState) -> List[Order]:
         orders: List[Order] = []
         position = state.position.get("KELP", 0)
@@ -249,10 +251,10 @@ class Trader:
             orders.append(Order("KELP", quote_ask, -ask_volume))
 
         return orders
-
-    
+   
+    # permanent
     def squidink_strategy(self, order_depth: OrderDepth, state: TradingState) -> List[Order]:
-        orders = []
+        orders: List[Order] = []
         product = "SQUID_INK"
         position = state.position.get(product, 0)
         position_limit = self.squid_position_limit
@@ -260,62 +262,52 @@ class Trader:
         if not order_depth.buy_orders or not order_depth.sell_orders:
             return orders
 
-        best_bid = max(order_depth.buy_orders.keys())
-        best_ask = min(order_depth.sell_orders.keys())
-
-        if best_bid is None or best_ask is None:
-            return orders
-
-        # Use mid-price as fair value estimate
+        best_bid = max(order_depth.buy_orders)
+        best_ask = min(order_depth.sell_orders)
         mid_price = (best_bid + best_ask) / 2
-        self.squid_prices.append(mid_price)
 
-        if len(self.squid_prices) > self.squid_window:
-            self.squid_prices.pop(0)
+        # Price history for moving stats
+        self.squid_price_history.append(mid_price)
+        if len(self.squid_price_history) > self.lookback_window_squid:
+            self.squid_price_history.pop(0)
 
-        if len(self.squid_prices) < self.squid_window:
-            return orders
+        # EWMA mean/var update
+        self.ewma_mean_squid, self.ewma_var_squid = self.update_ewma(
+            mid_price, self.ewma_mean_squid, self.ewma_var_squid, self.ewma_alpha_squid
+        )
+        fair_value = self.ewma_mean_squid if self.ewma_mean_squid else mid_price
+        std_dev = math.sqrt(self.ewma_var_squid) if self.ewma_var_squid and self.ewma_var_squid > 0 else 1
 
-        # Mean-reversion fair price based on moving average of mid-prices
-        fair_price = np.mean(self.squid_prices[-self.squid_window:])
+        # Inventory-based skew
+        inventory_skew = -0.1 * position / position_limit
 
-        # === Calculate price deviations and z-score ===
-        price_deviations = np.array([abs(price - fair_price) for price in self.squid_prices[-self.squid_window:]])
-        mean_deviation = np.mean(price_deviations)
-        std_deviation = np.std(price_deviations)
+        # Momentum skew
+        self.squid_last_prices.append(mid_price)
+        if len(self.squid_last_prices) > self.momentum_window_squid:
+            self.squid_last_prices.pop(0)
+        momentum = self.squid_last_prices[-1] - self.squid_last_prices[0] if len(self.squid_last_prices) >= 2 else 0
+        momentum_skew = 0.2 * (momentum / std_dev)
 
-        if std_deviation == 0:
-            z_score = 0  # If no variation, default z-score to 0
-        else:
-            # Z-score for current price deviation
-            current_deviation = abs(mid_price - fair_price)
-            z_score = (current_deviation - mean_deviation) / std_deviation
+        total_skew = inventory_skew + momentum_skew
 
-        # === Adjust spread based on z-score ===
-        base_spread = 9  # base spread
-        spread_sensitivity = 5  # controls how aggressively spread increases with z-score
+        # Dynamic spread
+        base_spread = 1.7
+        dynamic_spread = base_spread + std_dev * self.volatility_spread_multiplier_squid
 
-        # Calculate the spread based on the z-score
-        spread = base_spread + spread_sensitivity * z_score
+        quote_bid = int(fair_value - dynamic_spread / 2 + total_skew)
+        quote_ask = int(fair_value + dynamic_spread / 2 + total_skew)
 
-        # Ensure that spread is non-negative (avoid negative spreads)
+        # Order sizing
+        bid_volume = min(10, position_limit - position)
+        ask_volume = min(10, position_limit + position)
 
-        # Market making quotes
-        order_size = 50  # fixed market making size
-        bid_price = int(fair_price - spread)
-        ask_price = int(fair_price + spread)
-
-        # Enforce position limits
-        if position < position_limit:
-            buy_volume = min(order_size, position_limit - position)
-            orders.append(Order(product, bid_price, buy_volume))
-
-        if position > -position_limit:
-            sell_volume = min(order_size, position + position_limit)
-            orders.append(Order(product, ask_price, -sell_volume))
+        if bid_volume > 0:
+            orders.append(Order(product, quote_bid, bid_volume))
+        if ask_volume > 0:
+            orders.append(Order(product, quote_ask, -ask_volume))
 
         return orders
-    
+
     def djembes_strategy(self, order_depth: OrderDepth, state: TradingState) -> List[Order]:
         orders = []
         product = "DJEMBES"  # Corrected product name
@@ -674,15 +666,19 @@ class Trader:
             self.timeframe_data = trader_data.get("timeframe_data", self.timeframe_data)
             self.djembe_theoretical_prices = trader_data.get("djembe_theoretical_prices", self.djembe_theoretical_prices)
             self.djembe_actual_prices = trader_data.get("djembe_actual_prices", self.djembe_actual_prices)
+            self.squid_price_history = trader_data.get("squid_price_history", self.squid_price_history)
+            self.ewma_mean_squid = trader_data.get("ewma_mean_squid", self.ewma_mean_squid)
+            self.ewma_var_squid = trader_data.get("ewma_var_squid", self.ewma_var_squid)
+            self.squid_last_prices = trader_data.get("squid_last_prices", self.squid_last_prices)
         
         # if "RAINFOREST_RESIN" in state.order_depths:
         #     result["RAINFOREST_RESIN"] = self.resin_strategy(state.order_depths["RAINFOREST_RESIN"], 2, state)
         
-        if "KELP" in state.order_depths:
-            result["KELP"] = self.kelp_strategy(state.order_depths["KELP"], state)
+        # if "KELP" in state.order_depths:
+        #     result["KELP"] = self.kelp_strategy(state.order_depths["KELP"], state)
                 
-        # if "SQUID_INK" in state.order_depths:
-        #     result["SQUID_INK"] = self.squidink_strategy(state.order_depths["SQUID_INK"], state)
+        if "SQUID_INK" in state.order_depths:
+            result["SQUID_INK"] = self.squidink_strategy(state.order_depths["SQUID_INK"], state)
                 
         # if "JAMS" in state.order_depths:
         #     result["JAMS"] = self.jams_strategy(state.order_depths["JAMS"], state)
@@ -706,7 +702,11 @@ class Trader:
             "kelp_last_prices": self.kelp_last_prices,
             "timeframe_data": self.timeframe_data,
             "djembe_theoretical_prices": self.djembe_theoretical_prices,
-            "djembe_actual_prices": self.djembe_actual_prices
+            "djembe_actual_prices": self.djembe_actual_prices,
+            "squid_price_history": self.squid_price_history,
+            "ewma_mean_squid": self.ewma_mean_squid,
+            "ewma_var_squid": self.ewma_var_squid,
+            "squid_last_prices": self.squid_last_prices,
         }
         
         return result, conversions, jsonpickle.encode(trader_data)

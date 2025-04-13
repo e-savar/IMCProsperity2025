@@ -498,70 +498,6 @@ class Trader:
         
         return orders
 
-    def croissants_strategy(self, order_depth: OrderDepth, state: TradingState) -> List[Order]:
-        orders = []
-        symbol = "CROISSANTS"
-        position = state.position.get(symbol, 0)
-        limit = self.croissant_position_limit
-
-        # Ensure there are valid buy and sell orders
-        if not order_depth.buy_orders or not order_depth.sell_orders:
-            return orders
-
-        # Get the best bid and ask prices
-        best_bid = max(order_depth.buy_orders.keys(), default=None)
-        best_ask = min(order_depth.sell_orders.keys(), default=None)
-
-        if best_bid is None or best_ask is None:
-            return orders
-
-        # Calculate the mid-price (fair value estimate)
-        mid_price = (best_bid + best_ask) / 2
-
-        # Track mid prices for moving average calculation
-        self.croissant_prices.append(mid_price)
-
-        # Keep only the last 'rolling_window' prices
-        if len(self.croissant_prices) > self.rolling_window:
-            self.croissant_prices.pop(0)
-
-        # If there aren't enough prices, do nothing
-        if len(self.croissant_prices) < self.rolling_window:
-            return orders
-
-        # Calculate moving average of the mid prices
-        mean_price = np.mean(self.croissant_prices)
-
-        # === Dynamic Spread Calculation Based on Price Deviations ===
-        price_deviations = np.abs(np.array(self.croissant_prices) - mean_price)
-        mean_deviation = np.mean(price_deviations)
-        std_deviation = np.std(price_deviations)
-
-        # If no variation, use a fixed spread
-        if std_deviation == 0:
-            spread = 2
-        else:
-            # Use mean deviation to adjust spread more conservatively
-            spread = max(2, mean_deviation)  # Use mean deviation for more conservative spread adjustment
-
-        # === Market Making Logic ===
-
-        # BUY SIDE
-        if position < limit:
-            buy_price = int(mean_price - spread)
-            buy_volume = min(5, limit - position)  # 5 is the fixed order size
-            if buy_volume > 0:
-                orders.append(Order(symbol, buy_price, buy_volume))
-
-        # SELL SIDE
-        if position > -limit:
-            sell_price = int(mean_price + spread)
-            sell_volume = min(5, position + limit)  # 5 is the fixed order size
-            if sell_volume > 0:
-                orders.append(Order(symbol, sell_price, -sell_volume))
-
-        return orders
-
     def picnic_basket_1_strategy(self, order_depth: OrderDepth, state: TradingState):
         # This strategy should consider the limits and the current order depth
         orders = []
@@ -633,7 +569,137 @@ class Trader:
             orders.append(Order("PICNIC_BASKET2", best_bid, -quantity))
 
         return orders
+    # Standard normal CDF approximation (Abramowitz and Stegun formula)
+    def norm_cdf(self, x):
+        k = 1.0 / (1.0 + 0.2316419 * abs(x))
+        a1, a2, a3, a4, a5 = 0.319381530, -0.356563782, 1.781477937, -1.821255978, 1.330274429
+        poly = ((((a5 * k + a4) * k + a3) * k + a2) * k + a1)
+        approx = 1.0 - (1.0 / math.sqrt(2 * math.pi)) * math.exp(-0.5 * x * x) * poly
+        return approx if x >= 0 else 1.0 - approx
 
+    # Standard normal PDF
+    def norm_pdf(self, x):
+        return math.exp(-0.5 * x**2) / math.sqrt(2 * math.pi)
+
+    # Black-Scholes call price
+    def black_scholes_call(self, S, K, T, r, sigma):
+        d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
+        d2 = d1 - sigma * math.sqrt(T)
+        return S * self.norm_cdf(d1) - K * math.exp(-r * T) * self.norm_cdf(d2)
+
+    # Greeks for call options
+    def black_scholes_greeks(self, S, K, T, r, sigma):
+        d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
+        d2 = d1 - sigma * math.sqrt(T)
+        delta = self.norm_cdf(d1)
+        gamma = self.norm_pdf(d1) / (S * sigma * math.sqrt(T))
+        vega = S * self.norm_pdf(d1) * math.sqrt(T)
+        theta = (-S * self.norm_pdf(d1) * sigma / (2 * math.sqrt(T)) 
+                - r * K * math.exp(-r * T) * self.norm_cdf(d2))
+        rho = K * T * math.exp(-r * T) * self.norm_cdf(d2)
+        return {
+            "delta": delta,
+            "gamma": gamma,
+            "vega": vega,
+            "theta": theta,
+            "rho": rho
+        }
+
+    # Implied Volatility using bisection method
+    def implied_volatility_call(self, S, K, T, r, market_price, tol=1e-5, max_iter=100):
+        low, high = 0.0001, 5.0
+        for _ in range(max_iter):
+            mid = (low + high) / 2
+            price = self.black_scholes_call(S, K, T, r, mid)
+            if abs(price - market_price) < tol:
+                return mid
+            if price < market_price:
+                low = mid
+            else:
+                high = mid
+        return mid
+
+    def volcanic_voucher_strategy(self, state: TradingState) -> List[Order]:
+        orders = []
+
+        spot_product = "VOLCANIC_ROCK"
+        spot_depth = state.order_depths.get(spot_product, None)
+        if not spot_depth or not spot_depth.buy_orders or not spot_depth.sell_orders:
+            return orders
+
+        best_bid = max(spot_depth.buy_orders.keys(), default=None)
+        best_ask = min(spot_depth.sell_orders.keys(), default=None)
+        if best_bid is None or best_ask is None:
+            return orders
+
+        spot_price = (best_bid + best_ask) / 2
+        T = 5 / 365  # 5 days to expiration in year fraction
+        r = 0.00
+
+        vouchers = {
+            "VOLCANIC_ROCK_VOUCHER_9500": 9500,
+            "VOLCANIC_ROCK_VOUCHER_9750": 9750,
+            "VOLCANIC_ROCK_VOUCHER_10000": 10000,
+            "VOLCANIC_ROCK_VOUCHER_10250": 10250,
+            "VOLCANIC_ROCK_VOUCHER_10500": 10500,
+        }
+
+        iv_data = []
+
+        for voucher, strike in vouchers.items():
+            if voucher not in state.order_depths:
+                continue
+
+            depth = state.order_depths[voucher]
+            v_bid = max(depth.buy_orders.keys(), default=None)
+            v_ask = min(depth.sell_orders.keys(), default=None)
+            if v_bid is None or v_ask is None:
+                continue
+
+            market_price = (v_bid + v_ask) / 2
+            iv = self.implied_volatility_call(spot_price, strike, T, r, market_price)
+            greeks = self.black_scholes_greeks(spot_price, strike, T, r, iv)
+
+            iv_data.append({
+                "voucher": voucher,
+                "strike": strike,
+                "iv": iv,
+                "greeks": greeks,
+                "price": market_price,
+                "bid": v_bid,
+                "ask": v_ask,
+                "depth": depth
+            })
+
+        if not iv_data:
+            return orders
+
+        iv_data.sort(key=lambda x: x["iv"])
+        cheap = iv_data[0]
+        expensive = iv_data[-1]
+
+        position_cheap = state.position.get(cheap["voucher"], 0)
+        position_exp = state.position.get(expensive["voucher"], 0)
+
+        buy_qty = min(5, 200 - position_cheap)
+        sell_qty = min(5, 200 + position_exp)
+
+        if buy_qty > 0:
+            orders.append(Order(cheap["voucher"], cheap["ask"], buy_qty))
+        if sell_qty > 0:
+            orders.append(Order(expensive["voucher"], expensive["bid"], -sell_qty))
+
+        net_delta = (cheap["greeks"]["delta"] * buy_qty) - (expensive["greeks"]["delta"] * sell_qty)
+        hedge_qty = round(-net_delta)
+        hedge_limit = 400
+        hedge_position = state.position.get(spot_product, 0)
+
+        if hedge_qty > 0 and hedge_position + hedge_qty <= hedge_limit:
+            orders.append(Order(spot_product, best_ask, hedge_qty))
+        elif hedge_qty < 0 and hedge_position + hedge_qty >= -hedge_limit:
+            orders.append(Order(spot_product, best_bid, hedge_qty))
+
+        return orders
     def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
         result = {}
         conversions = 0
@@ -667,18 +733,31 @@ class Trader:
         # if "JAMS" in state.order_depths:
         #     result["JAMS"] = self.commodity_strategy("JAMS", state.order_depths["JAMS"], state)
         
-        if "CROISSANTS" in state.order_depths:
-            result["CROISSANTS"] = self.commodity_strategy("CROISSANTS", state.order_depths["CROISSANTS"], state)
+        # if "CROISSANTS" in state.order_depths:
+        #     result["CROISSANTS"] = self.commodity_strategy("CROISSANTS", state.order_depths["CROISSANTS"], state)
         
-        # if "DJEMBES" in state.order_depths: 
-        #     result["DJEMBES"] = self.djembes_strategy(state.order_depths["DJEMBES"], state)
+        if "DJEMBES" in state.order_depths: 
+            result["DJEMBES"] = self.djembes_strategy(state.order_depths["DJEMBES"], state)
         
         # if "PICNIC_BASKET1" in state.order_depths:
         #     result["PICNIC_BASKET1"] = self.picnic_basket_1_strategy(state.order_depths["PICNIC_BASKET1"], state)
         
         # if "PICNIC_BASKET2" in state.order_depths:
         #     result["PICNIC_BASKET2"] = self.picnic_basket_2_strategy(state.order_depths["PICNIC_BASKET2"], state)
-                
+        if "VOLCANIC_ROCK" in state.order_depths:
+            result["VOLCANIC_ROCK"] = self.volcanic_voucher_strategy(state)
+        
+        if "VOLCANIC_ROCK_VOUCHER_9500" in state.order_depths:
+            result["VOLCANIC_ROCK_VOUCHER_9500"] = self.volcanic_voucher_strategy(state)
+        if "VOLCANIC_ROCK_VOUCHER_9750" in state.order_depths:
+            result["VOLCANIC_ROCK_VOUCHER_9750"] = self.volcanic_voucher_strategy(state)
+        if "VOLCANIC_ROCK_VOUCHER_10000" in state.order_depths:
+            result["VOLCANIC_ROCK_VOUCHER_10000"] = self.volcanic_voucher_strategy(state)
+        if "VOLCANIC_ROCK_VOUCHER_10250" in state.order_depths:
+            result["VOLCANIC_ROCK_VOUCHER_10250"] = self.volcanic_voucher_strategy(state)
+        if "VOLCANIC_ROCK_VOUCHER_10500" in state.order_depths:
+            result["VOLCANIC_ROCK_VOUCHER_10500"] = self.volcanic_voucher_strategy(state)
+
         trader_data = {
             "timeframe_data": self.timeframe_data,
             "djembe_theoretical_prices": self.djembe_theoretical_prices,

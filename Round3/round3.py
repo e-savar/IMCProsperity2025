@@ -158,41 +158,49 @@ class Trader:
             "KELP": 50,
             "SQUID_INK": 50,
             "JAMS": 350,
+            'CROISSANTS': 250,
         }
         self.base_spreads = {
             "KELP": 1.3,
             "SQUID_INK": 1.7,
             "JAMS": 1.5,
+            'CROISSANTS': 1.5,
         }
         self.inventory_factor = {
             "KELP": -0.2,
             "SQUID_INK": -0.1,
             "JAMS": -0.25,
+            'CROISSANTS': -0.4,
         }
         self.momentum_factor = {
             "KELP": 0.1,
             "SQUID_INK": 0.2,
             "JAMS": 0.5,
+            'CROISSANTS': 0.25,
         }
         self.ewma_mean = {
             "KELP": None,
             "SQUID_INK": None,
             "JAMS": None,
+            "CROISSANTS": None,
         }
         self.ewma_var = {
             "KELP": None,
             "SQUID_INK": None,
             "JAMS": None,
+            "CROISSANTS": None,
         }
         self.price_history = {
             "KELP": [],
             "SQUID_INK": [],
-            "JAMS": []
+            "JAMS": [],
+            "CROISSANTS": [],
         }
         self.last_prices = {
             "KELP": [],
             "SQUID_INK": [],
             "JAMS": [],
+            "CROISSANTS": [],
         }
         self.volatility_spread_multiplier = 1.7
         self.lookback_window = 100
@@ -324,6 +332,7 @@ class Trader:
 
         if not order_depth.buy_orders or not order_depth.sell_orders:
             return orders
+        
         best_bid = max(order_depth.buy_orders)
         best_ask = min(order_depth.sell_orders)
         mid_price = (best_bid + best_ask) / 2
@@ -334,8 +343,10 @@ class Trader:
         self.ewma_mean[product], self.ewma_var[product] = self.update_ewma(
             mid_price, self.ewma_mean[product], self.ewma_var[product], self.ewma_alpha
         )
+
         fair_value = self.ewma_mean[product] if self.ewma_mean[product] else mid_price
         std_dev = math.sqrt(self.ewma_var[product]) if self.ewma_var[product] and self.ewma_var[product] > 0 else 1
+
         inventory_skew = self.inventory_factor[product] * position / position_limit
         self.last_prices[product].append(mid_price)
         if len(self.last_prices[product]) > self.momentum_window:
@@ -343,8 +354,10 @@ class Trader:
         momentum = self.last_prices[product][-1] - self.last_prices[product][0] if len(self.last_prices[product]) >= 2 else 0
         momentum_skew = self.momentum_factor[product] * (momentum / std_dev)
         total_skew = inventory_skew + momentum_skew
+
         base_spread = self.base_spreads[product]
         dynamic_spread = base_spread + std_dev * self.volatility_spread_multiplier
+
         quote_bid = int(fair_value - dynamic_spread / 2 + total_skew)
         quote_ask = int(fair_value + dynamic_spread / 2 + total_skew)
         bid_volume = min(10, position_limit - position)
@@ -644,17 +657,18 @@ class Trader:
         # if "RAINFOREST_RESIN" in state.order_depths:
         #     result["RAINFOREST_RESIN"] = self.resin_strategy(state.order_depths["RAINFOREST_RESIN"], 2, state)
         
-        if "KELP" in state.order_depths:
-            result["KELP"] = self.commodity_strategy("KELP", state.order_depths["KELP"], state)
+        # if "KELP" in state.order_depths:
+        #     result["KELP"] = self.commodity_strategy("KELP", state.order_depths["KELP"], state)
                 
-        if "SQUID_INK" in state.order_depths:
-            result["SQUID_INK"] = self.commodity_strategy("SQUID_INK", state.order_depths["SQUID_INK"], state)
-                
-        if "JAMS" in state.order_depths:
-            result["JAMS"] = self.commodity_strategy("JAMS", state.order_depths["JAMS"], state)
+        # if "SQUID_INK" in state.order_depths:
+        #     result["SQUID_INK"] = self.commodity_strategy("SQUID_INK", state.order_depths["SQUID_INK"], state)
+
+        # # OPTIMIZE parameters        
+        # if "JAMS" in state.order_depths:
+        #     result["JAMS"] = self.commodity_strategy("JAMS", state.order_depths["JAMS"], state)
         
-        # if "CROISSANTS" in state.order_depths:
-        #     result["CROISSANTS"] = self.croissants_strategy(state.order_depths["CROISSANTS"], state)
+        if "CROISSANTS" in state.order_depths:
+            result["CROISSANTS"] = self.commodity_strategy("CROISSANTS", state.order_depths["CROISSANTS"], state)
         
         # if "DJEMBES" in state.order_depths: 
         #     result["DJEMBES"] = self.djembes_strategy(state.order_depths["DJEMBES"], state)

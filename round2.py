@@ -66,6 +66,7 @@ class Trader:
         self.djembe_actual_prices = []
         self.djembe_window = 20  # Lookback window size
         self.djembe_position_limit = 20  # Position limit, adjust as needed
+        self.djembe_spread_history = []
 
         # PICNIC_BASKET_1 parameters
         # contain 6 croissants, 3 jams, 1 DJEMBES
@@ -392,16 +393,18 @@ class Trader:
         if len(self.djembes_theoretical_prices) > self.djembes_window:
             self.djembes_theoretical_prices.pop(0)
             self.djembes_actual_prices.pop(0)
+            self.djembe_spread_history.pop(0)
         
         # Price difference between theoretical and actual
         price_diff = dj_theoretical - dj_mid
+        self.djembe_spread_history.append(price_diff)
         
         # Simple threshold-based trading with fixed thresholds
         buy_threshold = 3
         sell_threshold = 3
         
         # Base order size
-        order_size = 20
+        order_size = 60
         
         # Trading logic
         if price_diff > buy_threshold:
@@ -411,13 +414,32 @@ class Trader:
                 # Place a buy order at the best bid or slightly higher
                 buy_price = dj_best_bid  # Try matching the current best bid first
                 orders.append(Order(product, buy_price, buy_volume))
-        elif price_diff < -sell_threshold:
+        if price_diff < -sell_threshold:
             # DJEMBES is overvalued based on basket prices
             if position > -position_limit:
-                sell_volume = min(order_size, position_limit + position)
-                # Place sell order at the best ask or slightly lower
-                sell_price = dj_best_ask  # Try matching the current best ask first
-                orders.append(Order(product, sell_price, -sell_volume))
+                sell_volume = min(order_size, position_limit + position)  # Ensure non-negative volume
+                if sell_volume > 0:
+                    sell_price = dj_best_ask - 0.1
+                    orders.append(Order(product, sell_price, -sell_volume))
+
+        if len(self.djembe_spread_history) > 5:
+            spread_std = np.std(self.djembe_spread_history) + 1e-9 # Avoid division by zero
+            spread_mean = np.mean(self.djembe_spread_history)
+            z_score = (price_diff - spread_mean) / spread_std
+            # Check for arbitrage opportunity
+            threshold = 1.3
+            if z_score > threshold:
+                # Arbitrage opportunity detected, buy (undervalued)
+                if position < position_limit:
+                    buy_volume = min(order_size, position_limit - position)
+                    buy_price = dj_best_bid
+                    orders.append(Order(product, buy_price, buy_volume))
+            elif z_score < -threshold:
+                # Arbitrage opportunity detected, sell (overvalued)
+                if position > -position_limit:
+                    sell_volume = min(order_size, position_limit + position)
+                    sell_price = dj_best_ask
+                    orders.append(Order(product, sell_price, -sell_volume))
         
         # Add simple market making if no arbitrage opportunity detected
         if not orders and len(self.djembes_theoretical_prices) > 5:
@@ -443,6 +465,7 @@ class Trader:
                 orders.append(Order(product, ask_price, -sell_volume))
         
         return orders
+   
     def jams_strategy(self, order_depth: OrderDepth, state: TradingState) -> List[Order]:
         orders = []
         product = "JAMS"

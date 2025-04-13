@@ -252,7 +252,7 @@ class Trader:
 
         return orders
    
-    # permanent
+    # stable - try working on round 2 day 1
     def squidink_strategy(self, order_depth: OrderDepth, state: TradingState) -> List[Order]:
         orders: List[Order] = []
         product = "SQUID_INK"

@@ -274,68 +274,77 @@ class Trader:
 
         return orders
     
+
     def squidink_strategy(self, order_depth: OrderDepth, state: TradingState) -> List[Order]:
         orders = []
         product = "SQUID_INK"
         position = state.position.get(product, 0)
         position_limit = self.squid_position_limit
 
+        # Ensure order depth has buy and sell orders
         if not order_depth.buy_orders or not order_depth.sell_orders:
             return orders
 
-        best_bid = max(order_depth.buy_orders.keys())
-        best_ask = min(order_depth.sell_orders.keys())
+        # Get best bid and ask prices
+        best_bid = max(order_depth.buy_orders.keys(), default=None)
+        best_ask = min(order_depth.sell_orders.keys(), default=None)
 
         if best_bid is None or best_ask is None:
             return orders
 
-        # Use mid-price as fair value estimate
+        # Calculate the mid-price (fair value estimate)
         mid_price = (best_bid + best_ask) / 2
         self.squid_prices.append(mid_price)
 
+        # Keep only the last 'squid_window' prices
         if len(self.squid_prices) > self.squid_window:
             self.squid_prices.pop(0)
 
+        # If there aren't enough prices, do nothing
         if len(self.squid_prices) < self.squid_window:
             return orders
 
-        # Mean-reversion fair price based on moving average of mid-prices
-        fair_price = np.mean(self.squid_prices[-self.squid_window:])
+        # Mean-reversion fair price (moving average of mid-prices)
+        fair_price = np.mean(self.squid_prices)
 
-        # === Calculate price deviations and z-score ===
-        price_deviations = np.array([abs(price - fair_price) for price in self.squid_prices[-self.squid_window:]])
+        # Calculate price deviations from the fair price
+        price_deviations = np.abs(np.array(self.squid_prices) - fair_price)
         mean_deviation = np.mean(price_deviations)
         std_deviation = np.std(price_deviations)
 
+        # Handle the case of no variation (std_deviation == 0)
         if std_deviation == 0:
-            z_score = 0  # If no variation, default z-score to 0
+            z_score = 0
         else:
             # Z-score for current price deviation
             current_deviation = abs(mid_price - fair_price)
             z_score = (current_deviation - mean_deviation) / std_deviation
 
-        # === Adjust spread based on z-score ===
-        base_spread = 9  # base spread
-        spread_sensitivity = 5  # controls how aggressively spread increases with z-score
-
-        # Calculate the spread based on the z-score
+        # Adjust spread based on z-score, making the spread more sensitive to high deviations
+        base_spread = 7
+        spread_sensitivity = 5  # Adjust how aggressively the spread changes
         spread = base_spread + spread_sensitivity * z_score
 
-        # Ensure that spread is non-negative (avoid negative spreads)
+        # Ensure the spread is non-negative
+        spread = max(spread, 0)
 
-        # Market making quotes
-        order_size = 50  # fixed market making size
+        # Market making: determine bid and ask prices based on spread
         bid_price = int(fair_price - spread)
         ask_price = int(fair_price + spread)
 
-        # Enforce position limits
+        # Set order size for market making
+        order_size = 50
+
+        # Check position and enforce limits before placing orders
         if position < position_limit:
             buy_volume = min(order_size, position_limit - position)
-            orders.append(Order(product, bid_price, buy_volume))
+            if buy_volume > 0:
+                orders.append(Order(product, bid_price, buy_volume))
 
         if position > -position_limit:
             sell_volume = min(order_size, position + position_limit)
-            orders.append(Order(product, ask_price, -sell_volume))
+            if sell_volume > 0:
+                orders.append(Order(product, ask_price, -sell_volume))
 
         return orders
 
@@ -541,6 +550,7 @@ class Trader:
                 orders.append(Order(product, ask_price, -sell_volume))
 
             return orders
+    
     def croissants_strategy(self, order_depth: OrderDepth, state: TradingState):
         symbol = "CROISSANTS"
         position = state.position.get(symbol, 0)

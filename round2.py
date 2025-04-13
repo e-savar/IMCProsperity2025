@@ -400,11 +400,11 @@ class Trader:
         self.djembe_spread_history.append(price_diff)
         
         # Simple threshold-based trading with fixed thresholds
-        buy_threshold = 3
-        sell_threshold = 3
+        buy_threshold = 1.5
+        sell_threshold = 1.5
         
         # Base order size
-        order_size = 60
+        order_size = 1
         
         # Trading logic
         if price_diff > buy_threshold:

@@ -482,7 +482,7 @@ class Trader:
         if len(self.jams_last_prices) > self.momentum_window_jams:
             self.jams_last_prices.pop(0)
         momentum = self.jams_last_prices[-1] - self.jams_last_prices[0] if len(self.jams_last_prices) >= 2 else 0
-        momentum_skew = .75 * (momentum / std_dev)
+        momentum_skew = .5 * (momentum / std_dev)
 
         total_skew = inventory_skew + momentum_skew
 

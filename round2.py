@@ -65,7 +65,6 @@ class Trader:
         self.djembe_theoretical_prices = []
         self.djembe_actual_prices = []
         self.djembe_window = 20  # Lookback window size
-        self.djembe_position_limit = 20  # Position limit, adjust as needed
         self.djembe_spread_history = []
 
         # PICNIC_BASKET_1 parameters
@@ -385,6 +384,7 @@ class Trader:
             self.djembes_theoretical_prices = []
             self.djembes_actual_prices = []
             self.djembes_window = 20  # Default window size
+            self.djembe_spread_history = []  # Initialize the spread history
         
         self.djembes_theoretical_prices.append(dj_theoretical)
         self.djembes_actual_prices.append(dj_mid)
@@ -412,20 +412,23 @@ class Trader:
             if position < position_limit:
                 buy_volume = min(order_size, position_limit - position)
                 # Place a buy order at the best bid or slightly higher
-                buy_price = dj_best_bid  # Try matching the current best bid first
+                buy_price = dj_best_bid + 1  # Try matching the current best bid first
                 orders.append(Order(product, buy_price, buy_volume))
+        
         if price_diff < -sell_threshold:
             # DJEMBES is overvalued based on basket prices
             if position > -position_limit:
                 sell_volume = min(order_size, position_limit + position)  # Ensure non-negative volume
                 if sell_volume > 0:
-                    sell_price = dj_best_ask - 0.1
+                    sell_price = dj_best_ask - 1
                     orders.append(Order(product, sell_price, -sell_volume))
 
+        # Ensure that the spread history has enough data before calculating z-score
         if len(self.djembe_spread_history) > 5:
-            spread_std = np.std(self.djembe_spread_history) + 1e-9 # Avoid division by zero
+            spread_std = np.std(self.djembe_spread_history) + 1e-9  # Avoid division by zero
             spread_mean = np.mean(self.djembe_spread_history)
             z_score = (price_diff - spread_mean) / spread_std
+            
             # Check for arbitrage opportunity
             threshold = 1.3
             if z_score > threshold:
@@ -465,65 +468,79 @@ class Trader:
                 orders.append(Order(product, ask_price, -sell_volume))
         
         return orders
-   
+
     def jams_strategy(self, order_depth: OrderDepth, state: TradingState) -> List[Order]:
-        orders = []
-        product = "JAMS"
-        position = state.position.get(product, 0)
-        position_limit = self.jams_position_limit
+            orders = []
+            product = "JAMS"
+            position = state.position.get(product, 0)
+            position_limit = self.jams_position_limit
 
-        if not order_depth.buy_orders or not order_depth.sell_orders:
+            if not order_depth.buy_orders or not order_depth.sell_orders:
+                return orders
+
+            best_bid = max(order_depth.buy_orders.keys())
+            best_ask = min(order_depth.sell_orders.keys())
+
+            if best_bid is None or best_ask is None:
+                return orders
+
+            mid_price = (best_bid + best_ask) / 2
+            self.jams_prices.append(mid_price)
+
+            if len(self.jams_prices) > self.jams_window:
+                self.jams_prices.pop(0)
+
+            if len(self.jams_prices) < self.jams_window:
+                return orders
+
+            fair_price = np.mean(self.jams_prices[-self.jams_window:])
+            price_array = np.array(self.jams_prices[-self.jams_window:])
+            time_array = np.arange(len(price_array))
+            slope, _ = np.polyfit(time_array, price_array, 1)
+
+            momentum_bias_factor = 1.5 #conservative?
+            fair_price += max(0, momentum_bias_factor * slope)  
+
+            # limit volatility
+            volatility = np.std(price_array)
+            max_volatility = 3 
+            if volatility > max_volatility:
+                return orders  
+
+            price_deviations = np.abs(price_array - fair_price)
+            mean_deviation = np.mean(price_deviations)
+            std_deviation = np.std(price_deviations)
+
+            z_score = 0
+            if std_deviation > 0:
+                current_deviation = abs(mid_price - fair_price)
+                z_score = (current_deviation - mean_deviation) / std_deviation
+
+            base_spread = 16  # too wider?
+            spread_sensitivity = 8
+            spread = base_spread + spread_sensitivity * z_score
+
+            # size scaling
+            max_order_size = 50
+            if slope < 0:
+                order_size = int(max_order_size * (1 + slope))  
+                order_size = max(order_size, 10) 
+            else:
+                order_size = max_order_size
+
+            bid_price = int(fair_price - spread)
+            ask_price = int(fair_price + spread)
+
+            # do not buy avoid buying in strong downtrend
+            if slope >= -0.3 and position < position_limit:
+                buy_volume = min(order_size, position_limit - position)
+                orders.append(Order(product, bid_price, buy_volume))
+
+            if position > -position_limit:
+                sell_volume = min(order_size, position + position_limit)
+                orders.append(Order(product, ask_price, -sell_volume))
+
             return orders
-
-        best_bid = max(order_depth.buy_orders.keys())
-        best_ask = min(order_depth.sell_orders.keys())
-
-        if best_bid is None or best_ask is None:
-            return orders
-
-        mid_price = (best_bid + best_ask) / 2
-        self.jams_prices.append(mid_price)
-
-        if len(self.jams_prices) > self.jams_window:
-            self.jams_prices.pop(0)
-
-        if len(self.jams_prices) < self.jams_window:
-            return orders
-
-        fair_price = np.mean(self.jams_prices[-self.jams_window:])
-
-        price_deviations = np.array([abs(price - fair_price) for price in self.jams_prices[-self.jams_window:]])
-        mean_deviation = np.mean(price_deviations)
-        std_deviation = np.std(price_deviations)
-
-        if std_deviation == 0:
-            z_score = 0  # If no variation, default z-score to 0
-        else:
-            # Z-score for current price deviation
-            current_deviation = abs(mid_price - fair_price)
-            z_score = (current_deviation - mean_deviation) / std_deviation
-
-        base_spread = 14  # base spread
-        spread_sensitivity = 7  # controls how aggressively spread increases with z-score
-
-        # Calculate the spread based on the z-score
-        spread = base_spread + spread_sensitivity * z_score
-
-        order_size = 50  # fixed market making size
-        bid_price = int(fair_price - spread)
-        ask_price = int(fair_price + spread)
-
-        # Enforce position limits
-        if position < position_limit:
-            buy_volume = min(order_size, position_limit - position)
-            orders.append(Order(product, bid_price, buy_volume))
-
-        if position > -position_limit:
-            sell_volume = min(order_size, position + position_limit)
-            orders.append(Order(product, ask_price, -sell_volume))
-
-        return orders
-
     def croissants_strategy(self, order_depth: OrderDepth, state: TradingState):
         symbol = "CROISSANTS"
         position = state.position.get(symbol, 0)
@@ -654,7 +671,6 @@ class Trader:
             self.ewma_var_kelp = trader_data.get("ewma_var_kelp", self.ewma_var_kelp)
             self.kelp_last_prices = trader_data.get("kelp_last_prices", self.kelp_last_prices)
             self.timeframe_data = trader_data.get("timeframe_data", self.timeframe_data)
-            # Add retrieving DJEMBE data
             self.djembe_theoretical_prices = trader_data.get("djembe_theoretical_prices", self.djembe_theoretical_prices)
             self.djembe_actual_prices = trader_data.get("djembe_actual_prices", self.djembe_actual_prices)
         
@@ -688,7 +704,6 @@ class Trader:
             "ewma_var_kelp": self.ewma_var_kelp,
             "kelp_last_prices": self.kelp_last_prices,
             "timeframe_data": self.timeframe_data,
-            # Add storing DJEMBE data
             "djembe_theoretical_prices": self.djembe_theoretical_prices,
             "djembe_actual_prices": self.djembe_actual_prices
         }

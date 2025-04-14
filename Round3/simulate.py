@@ -6,7 +6,7 @@ import numpy as np
 # Generate parameter ranges
 base_spread_values = np.round(np.arange(1.0, 2.05, 0.1), 2)
 inventory_factor_values = np.round(np.arange(-0.6, -0.049, 0.05), 2)
-momentum_factor_values = np.round(np.arange(0.1, 0.76, 0.05), 2)
+momentum_factor_values = np.round(np.arange(0.05, 0.76, 0.05), 2)
 
 def modify_strategy_file(base_spread, inventory_factor, momentum_factor):
     path = "round3/round3.py"
@@ -15,7 +15,7 @@ def modify_strategy_file(base_spread, inventory_factor, momentum_factor):
 
     # Base spread (inside self.base_spreads = { ... })
     content = re.sub(
-        r'(self\.base_spreads\s*=\s*{[^}]*?"SQUID_INK":\s*)[0-9.]+',
+        r'(self\.base_spreads\s*=\s*{[^}]*?"KELP":\s*)[0-9.]+',
         lambda m: f'{m.group(1)}{base_spread}',
         content,
         count=1
@@ -23,7 +23,7 @@ def modify_strategy_file(base_spread, inventory_factor, momentum_factor):
 
     # Inventory factor (inside self.inventory_factor = { ... })
     content = re.sub(
-        r'(self\.inventory_factor\s*=\s*{[^}]*?"SQUID_INK":\s*)-?[0-9.]+',
+        r'(self\.inventory_factor\s*=\s*{[^}]*?"KELP":\s*)-?[0-9.]+',
         lambda m: f'{m.group(1)}{inventory_factor}',
         content,
         count=1
@@ -31,7 +31,7 @@ def modify_strategy_file(base_spread, inventory_factor, momentum_factor):
 
     # Momentum factor (inside self.momentum_factor = { ... })
     content = re.sub(
-        r'(self\.momentum_factor\s*=\s*{[^}]*?"SQUID_INK":\s*)[0-9.]+',
+        r'(self\.momentum_factor\s*=\s*{[^}]*?"KELP":\s*)[0-9.]+',
         lambda m: f'{m.group(1)}{momentum_factor}',
         content,
         count=1
@@ -43,7 +43,7 @@ def modify_strategy_file(base_spread, inventory_factor, momentum_factor):
 
 
 def run_backtest():
-    result = subprocess.run(["prosperity3bt", "round3/round3.py", "6-2"], capture_output=True, text=True)
+    result = subprocess.run(["prosperity3bt", "round3/round3.py", "3"], capture_output=True, text=True)
     output = result.stdout
     match = re.search(r"Total profit:\s*([\d,\-]+)", output)
     if match:

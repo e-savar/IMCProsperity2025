@@ -162,13 +162,13 @@ class Trader:
         }
         self.base_spreads = {
             "KELP": 1.3,
-            "SQUID_INK": 1.8,
+            "SQUID_INK": 1.1,
             "JAMS": 1.5,
             'CROISSANTS': 1.5,
         }
         self.inventory_factor = {
             "KELP": -0.2,
-            "SQUID_INK": -0.6,
+            "SQUID_INK": -0.3,
             "JAMS": -0.25,
             'CROISSANTS': -0.4,
         }

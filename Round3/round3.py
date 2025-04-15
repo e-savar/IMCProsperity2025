@@ -527,11 +527,11 @@ class Trader:
         threshold = 0.001
         if best_ask < expected_basket_price * (1 - threshold):
             # buy basket
-            quantity = min(self.picnic_basket_1_limit, best_ask_volume)
+            quantity = 5
             orders.append(Order("PICNIC_BASKET1", best_ask, quantity))
         elif best_bid > expected_basket_price * (1 + threshold):
             # sell basket
-            quantity = min(self.picnic_basket_1_limit, best_bid_volume)
+            quantity = 5
             orders.append(Order("PICNIC_BASKET1", best_bid, -quantity))
 
         return orders
@@ -561,11 +561,11 @@ class Trader:
         threshold = 0.001
         if best_ask < expected_basket_price * (1 - threshold):
             # buy basket
-            quantity = min(self.picnic_basket_2_limit, best_ask_volume)
+            quantity = 5
             orders.append(Order("PICNIC_BASKET2", best_ask, quantity))
         elif best_bid > expected_basket_price * (1 + threshold):
             # sell basket
-            quantity = min(self.picnic_basket_2_limit, best_bid_volume)
+            quantity = 5
             orders.append(Order("PICNIC_BASKET2", best_bid, -quantity))
 
         return orders

@@ -125,40 +125,6 @@ logger = Logger()
 class Trader:
     def __init__(self):
 
-        # KELP parameters
-        self.kelp_price_history = []
-        self.lookback_window_kelp = 100
-        self.min_history_length_kelp = 20
-        self.z_threshold_kelp = 1.3
-        self.ewma_alpha_kelp = 0.2
-        self.ewma_mean_kelp = None
-        self.ewma_var_kelp = None
-        self.bollinger_width_kelp = 2
-        self.kelp_last_prices = []
-        self.momentum_window_kelp = 5
-        self.momentum_weight_kelp = 0.3
-        self.weighted_alpha = 0.7  # For weighted moving average
-        self.volatility_window = 15  # For volatility calculation
-        self.volatility_spread_multiplier_kelp = 1.7
-
-        # JAMS parameters
-        self.jams_position_limit = 350
-        self.jams_price_history = []
-        self.lookback_window_jams = 100
-        self.min_history_length_jams = 20
-        self.z_threshold_jams = 1.3
-        self.ewma_alpha_jams = 0.2
-        self.ewma_mean_jams = None
-        self.ewma_var_jams = None
-        self.bollinger_width_jams = 2
-        self.jams_last_prices = []
-        self.momentum_window_jams = 5
-        self.momentum_weight_jams = 0.3
-        self.weighted_alpha = 0.7  # For weighted moving average
-        self.volatility_window = 15  # For volatility calculation
-        self.volatility_spread_multiplier_jams = 1.7
-
-
         # RAINFOREST_RESIN parameters
         self.resin_fair_value = 10000
 
@@ -168,27 +134,6 @@ class Trader:
         self.rolling_window = 20
         self.momentum_window = 5
         
-        # SQUID_INK strategy parameters
-        self.squid_price_history = []
-        self.lookback_window_squid = 100
-        self.min_history_length_squid = 20
-        self.z_threshold_squid = 1.3
-        self.ewma_alpha_squid = 0.2
-        self.ewma_mean_squid = None
-        self.ewma_var_squid = None
-        self.bollinger_width_squid = 2
-        self.squid_last_prices = []
-        self.momentum_window_squid = 5
-        self.momentum_weight_squid = 0.3
-        self.weighted_alpha = 0.7  # For weighted moving average
-        self.volatility_window = 15  # For volatility calculation
-        self.volatility_spread_multiplier_squid = 1.7
-        self.squid_position_limit = 50
-
-        # Conversion tracking
-        self.prev_timestamp = None
-        self.timeframe_data = {}
-
         # DJEMBES parameters
         self.djembe_position_limit = 60
         self.djembe_theoretical_prices = []
@@ -207,6 +152,60 @@ class Trader:
         # Conversion tracking
         self.prev_timestamp = None
         self.timeframe_data = {}
+
+        # commodity parameters
+        self.position_limits = {
+            "KELP": 50,
+            "SQUID_INK": 50,
+            "JAMS": 350,
+            'CROISSANTS': 250,
+        }
+        self.base_spreads = {
+            "KELP": 1.3,
+            "SQUID_INK": 1.1,
+            "JAMS": 1.5,
+            'CROISSANTS': 1.5,
+        }
+        self.inventory_factor = {
+            "KELP": -0.2,
+            "SQUID_INK": -0.3,
+            "JAMS": -0.25,
+            'CROISSANTS': -0.4,
+        }
+        self.momentum_factor = {
+            "KELP": 0.1,
+            "SQUID_INK": 0.65,
+            "JAMS": 0.5,
+            'CROISSANTS': 0.25,
+        }
+        self.ewma_mean = {
+            "KELP": None,
+            "SQUID_INK": None,
+            "JAMS": None,
+            "CROISSANTS": None,
+        }
+        self.ewma_var = {
+            "KELP": None,
+            "SQUID_INK": None,
+            "JAMS": None,
+            "CROISSANTS": None,
+        }
+        self.price_history = {
+            "KELP": [],
+            "SQUID_INK": [],
+            "JAMS": [],
+            "CROISSANTS": [],
+        }
+        self.last_prices = {
+            "KELP": [],
+            "SQUID_INK": [],
+            "JAMS": [],
+            "CROISSANTS": [],
+        }
+        self.volatility_spread_multiplier = 1.7
+        self.lookback_window = 100
+        self.ewma_alpha = 0.2
+
 
     def clear_position_order(self, orders: List[Order], order_depth: OrderDepth, position: int,
                              position_limit: int, product: str, buy_order_volume: int,
@@ -326,115 +325,49 @@ class Trader:
 
         return orders
 
-    # permanent
-    def kelp_strategy(self, order_depth: OrderDepth, state: TradingState) -> List[Order]:
+    def commodity_strategy(self, product: str, order_depth: OrderDepth, state: TradingState) -> List[Order]:
         orders: List[Order] = []
-        position = state.position.get("KELP", 0)
-        position_limit = 50
-
-        if not order_depth.buy_orders or not order_depth.sell_orders:
-            return orders
-
-        best_bid = max(order_depth.buy_orders)
-        best_ask = min(order_depth.sell_orders)
-        mid_price = (best_bid + best_ask) / 2
-
-        self.kelp_price_history.append(mid_price)
-        if len(self.kelp_price_history) > self.lookback_window_kelp:
-            self.kelp_price_history.pop(0)
-
-        self.ewma_mean_kelp, self.ewma_var_kelp = self.update_ewma(
-            mid_price, self.ewma_mean_kelp, self.ewma_var_kelp, self.ewma_alpha_kelp
-        )
-        fair_value = self.ewma_mean_kelp if self.ewma_mean_kelp else mid_price
-        std_dev = math.sqrt(self.ewma_var_kelp) if self.ewma_var_kelp and self.ewma_var_kelp > 0 else 1
-
-        # INVENTORY-BASED SKEW
-        inventory_skew = -0.2 * position / position_limit  # skew is stronger the closer to position_limit
-
-        # MOMENTUM SKEW (optional)
-        self.kelp_last_prices.append(mid_price)
-        if len(self.kelp_last_prices) > self.momentum_window_kelp:
-            self.kelp_last_prices.pop(0)
-        momentum = self.kelp_last_prices[-1] - self.kelp_last_prices[0] if len(self.kelp_last_prices) >= 2 else 0
-        momentum_skew = 0.1 * (momentum / std_dev)
-
-        total_skew = inventory_skew + momentum_skew
-
-        # DYNAMIC SPREAD (wider when volatile)
-        base_spread = 1.3
-        dynamic_spread = base_spread + std_dev * self.volatility_spread_multiplier_kelp
-
-        quote_bid = int(fair_value - dynamic_spread / 2 + total_skew)
-        quote_ask = int(fair_value + dynamic_spread / 2 + total_skew)
-
-        # Determine order sizes (less aggressive when near limits)
-        bid_volume = min(10, position_limit - position)
-        ask_volume = min(10, position_limit + position)
-
-        if bid_volume > 0:
-            orders.append(Order("KELP", quote_bid, bid_volume))
-        if ask_volume > 0:
-            orders.append(Order("KELP", quote_ask, -ask_volume))
-
-        return orders
-   
-    # stable - try working on round 2 day 1
-    def squidink_strategy(self, order_depth: OrderDepth, state: TradingState) -> List[Order]:
-        orders: List[Order] = []
-        product = "SQUID_INK"
         position = state.position.get(product, 0)
-        position_limit = self.squid_position_limit
+        position_limit = self.position_limits[product]
 
         if not order_depth.buy_orders or not order_depth.sell_orders:
             return orders
-
+        
         best_bid = max(order_depth.buy_orders)
         best_ask = min(order_depth.sell_orders)
         mid_price = (best_bid + best_ask) / 2
+        self.price_history[product].append(mid_price)
 
-        # Price history for moving stats
-        self.squid_price_history.append(mid_price)
-        if len(self.squid_price_history) > self.lookback_window_squid:
-            self.squid_price_history.pop(0)
-
-        # EWMA mean/var update
-        self.ewma_mean_squid, self.ewma_var_squid = self.update_ewma(
-            mid_price, self.ewma_mean_squid, self.ewma_var_squid, self.ewma_alpha_squid
+        if len(self.price_history[product]) > self.lookback_window:
+            self.price_history[product].pop(0)
+        self.ewma_mean[product], self.ewma_var[product] = self.update_ewma(
+            mid_price, self.ewma_mean[product], self.ewma_var[product], self.ewma_alpha
         )
-        fair_value = self.ewma_mean_squid if self.ewma_mean_squid else mid_price
-        std_dev = math.sqrt(self.ewma_var_squid) if self.ewma_var_squid and self.ewma_var_squid > 0 else 1
 
-        # Inventory-based skew
-        inventory_skew = -0.1 * position / position_limit
+        fair_value = self.ewma_mean[product] if self.ewma_mean[product] else mid_price
+        std_dev = math.sqrt(self.ewma_var[product]) if self.ewma_var[product] and self.ewma_var[product] > 0 else 1
 
-        # Momentum skew
-        self.squid_last_prices.append(mid_price)
-        if len(self.squid_last_prices) > self.momentum_window_squid:
-            self.squid_last_prices.pop(0)
-        momentum = self.squid_last_prices[-1] - self.squid_last_prices[0] if len(self.squid_last_prices) >= 2 else 0
-        momentum_skew = 0.2 * (momentum / std_dev)
-
+        inventory_skew = self.inventory_factor[product] * position / position_limit
+        self.last_prices[product].append(mid_price)
+        if len(self.last_prices[product]) > self.momentum_window:
+            self.last_prices[product].pop(0)
+        momentum = self.last_prices[product][-1] - self.last_prices[product][0] if len(self.last_prices[product]) >= 2 else 0
+        momentum_skew = self.momentum_factor[product] * (momentum / std_dev)
         total_skew = inventory_skew + momentum_skew
 
-        # Dynamic spread
-        base_spread = 1.7
-        dynamic_spread = base_spread + std_dev * self.volatility_spread_multiplier_squid
+        base_spread = self.base_spreads[product]
+        dynamic_spread = base_spread + std_dev * self.volatility_spread_multiplier
 
         quote_bid = int(fair_value - dynamic_spread / 2 + total_skew)
         quote_ask = int(fair_value + dynamic_spread / 2 + total_skew)
-
-        # Order sizing
         bid_volume = min(10, position_limit - position)
         ask_volume = min(10, position_limit + position)
-
         if bid_volume > 0:
             orders.append(Order(product, quote_bid, bid_volume))
         if ask_volume > 0:
             orders.append(Order(product, quote_ask, -ask_volume))
-
         return orders
-
+    
     def djembes_strategy(self, order_depth: OrderDepth, state: TradingState) -> List[Order]:
         orders = []
         product = "DJEMBES"  # Corrected product name
@@ -565,126 +498,6 @@ class Trader:
         
         return orders
 
-    def jams_strategy(self, order_depth: OrderDepth, state: TradingState) -> List[Order]:
-        orders: List[Order] = []
-        product = "JAMS"
-        position = state.position.get(product, 0)
-        position_limit = self.jams_position_limit
-
-        if not order_depth.buy_orders or not order_depth.sell_orders:
-            return orders
-
-        best_bid = max(order_depth.buy_orders)
-        best_ask = min(order_depth.sell_orders)
-        mid_price = (best_bid + best_ask) / 2
-
-        # Track price history
-        self.jams_price_history.append(mid_price)
-        if len(self.jams_price_history) > self.lookback_window_jams:
-            self.jams_price_history.pop(0)
-
-        # EWMA mean & variance update
-        self.ewma_mean_jams, self.ewma_var_jams = self.update_ewma(
-            mid_price, self.ewma_mean_jams, self.ewma_var_jams, self.ewma_alpha_jams
-        )
-        fair_value = self.ewma_mean_jams if self.ewma_mean_jams else mid_price
-        std_dev = math.sqrt(self.ewma_var_jams) if self.ewma_var_jams and self.ewma_var_jams > 0 else 1
-
-        # Inventory-based skew
-        inventory_skew = -0.25 * position / position_limit
-
-        # Momentum skew based on price change
-        self.jams_last_prices.append(mid_price)
-        if len(self.jams_last_prices) > self.momentum_window_jams:
-            self.jams_last_prices.pop(0)
-        momentum = self.jams_last_prices[-1] - self.jams_last_prices[0] if len(self.jams_last_prices) >= 2 else 0
-        momentum_skew = .5 * (momentum / std_dev)
-
-        total_skew = inventory_skew + momentum_skew
-
-        # Dynamic spread
-        base_spread = 1.5
-        dynamic_spread = base_spread + std_dev * self.volatility_spread_multiplier_jams
-
-        # Final quote prices
-        quote_bid = int(fair_value - dynamic_spread / 2 + total_skew)
-        quote_ask = int(fair_value + dynamic_spread / 2 + total_skew)
-
-        # Position-aware sizing
-        bid_volume = min(10, position_limit - position)
-        ask_volume = min(10, position_limit + position)
-
-        if bid_volume > 0:
-            orders.append(Order(product, quote_bid, bid_volume))
-        if ask_volume > 0:
-            orders.append(Order(product, quote_ask, -ask_volume))
-
-        return orders
-
-    def croissants_strategy(self, order_depth: OrderDepth, state: TradingState) -> List[Order]:
-        orders = []
-        symbol = "CROISSANTS"
-        position = state.position.get(symbol, 0)
-        limit = self.croissant_position_limit
-
-        # Ensure there are valid buy and sell orders
-        if not order_depth.buy_orders or not order_depth.sell_orders:
-            return orders
-
-        # Get the best bid and ask prices
-        best_bid = max(order_depth.buy_orders.keys(), default=None)
-        best_ask = min(order_depth.sell_orders.keys(), default=None)
-
-        if best_bid is None or best_ask is None:
-            return orders
-
-        # Calculate the mid-price (fair value estimate)
-        mid_price = (best_bid + best_ask) / 2
-
-        # Track mid prices for moving average calculation
-        self.croissant_prices.append(mid_price)
-
-        # Keep only the last 'rolling_window' prices
-        if len(self.croissant_prices) > self.rolling_window:
-            self.croissant_prices.pop(0)
-
-        # If there aren't enough prices, do nothing
-        if len(self.croissant_prices) < self.rolling_window:
-            return orders
-
-        # Calculate moving average of the mid prices
-        mean_price = np.mean(self.croissant_prices)
-
-        # === Dynamic Spread Calculation Based on Price Deviations ===
-        price_deviations = np.abs(np.array(self.croissant_prices) - mean_price)
-        mean_deviation = np.mean(price_deviations)
-        std_deviation = np.std(price_deviations)
-
-        # If no variation, use a fixed spread
-        if std_deviation == 0:
-            spread = 2
-        else:
-            # Use mean deviation to adjust spread more conservatively
-            spread = max(2, mean_deviation)  # Use mean deviation for more conservative spread adjustment
-
-        # === Market Making Logic ===
-
-        # BUY SIDE
-        if position < limit:
-            buy_price = int(mean_price - spread)
-            buy_volume = min(5, limit - position)  # 5 is the fixed order size
-            if buy_volume > 0:
-                orders.append(Order(symbol, buy_price, buy_volume))
-
-        # SELL SIDE
-        if position > -limit:
-            sell_price = int(mean_price + spread)
-            sell_volume = min(5, position + limit)  # 5 is the fixed order size
-            if sell_volume > 0:
-                orders.append(Order(symbol, sell_price, -sell_volume))
-
-        return orders
-
     def picnic_basket_1_strategy(self, order_depth: OrderDepth, state: TradingState):
         # This strategy should consider the limits and the current order depth
         orders = []
@@ -756,7 +569,137 @@ class Trader:
             orders.append(Order("PICNIC_BASKET2", best_bid, -quantity))
 
         return orders
+    # Standard normal CDF approximation (Abramowitz and Stegun formula)
+    def norm_cdf(self, x):
+        k = 1.0 / (1.0 + 0.2316419 * abs(x))
+        a1, a2, a3, a4, a5 = 0.319381530, -0.356563782, 1.781477937, -1.821255978, 1.330274429
+        poly = ((((a5 * k + a4) * k + a3) * k + a2) * k + a1)
+        approx = 1.0 - (1.0 / math.sqrt(2 * math.pi)) * math.exp(-0.5 * x * x) * poly
+        return approx if x >= 0 else 1.0 - approx
 
+    # Standard normal PDF
+    def norm_pdf(self, x):
+        return math.exp(-0.5 * x**2) / math.sqrt(2 * math.pi)
+
+    # Black-Scholes call price
+    def black_scholes_call(self, S, K, T, r, sigma):
+        d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
+        d2 = d1 - sigma * math.sqrt(T)
+        return S * self.norm_cdf(d1) - K * math.exp(-r * T) * self.norm_cdf(d2)
+
+    # Greeks for call options
+    def black_scholes_greeks(self, S, K, T, r, sigma):
+        d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
+        d2 = d1 - sigma * math.sqrt(T)
+        delta = self.norm_cdf(d1)
+        gamma = self.norm_pdf(d1) / (S * sigma * math.sqrt(T))
+        vega = S * self.norm_pdf(d1) * math.sqrt(T)
+        theta = (-S * self.norm_pdf(d1) * sigma / (2 * math.sqrt(T)) 
+                - r * K * math.exp(-r * T) * self.norm_cdf(d2))
+        rho = K * T * math.exp(-r * T) * self.norm_cdf(d2)
+        return {
+            "delta": delta,
+            "gamma": gamma,
+            "vega": vega,
+            "theta": theta,
+            "rho": rho
+        }
+
+    # Implied Volatility using bisection method
+    def implied_volatility_call(self, S, K, T, r, market_price, tol=1e-5, max_iter=100):
+        low, high = 0.0001, 5.0
+        for _ in range(max_iter):
+            mid = (low + high) / 2
+            price = self.black_scholes_call(S, K, T, r, mid)
+            if abs(price - market_price) < tol:
+                return mid
+            if price < market_price:
+                low = mid
+            else:
+                high = mid
+        return mid
+
+    def volcanic_voucher_strategy(self, state: TradingState) -> List[Order]:
+        orders = []
+
+        spot_product = "VOLCANIC_ROCK"
+        spot_depth = state.order_depths.get(spot_product, None)
+        if not spot_depth or not spot_depth.buy_orders or not spot_depth.sell_orders:
+            return orders
+
+        best_bid = max(spot_depth.buy_orders.keys(), default=None)
+        best_ask = min(spot_depth.sell_orders.keys(), default=None)
+        if best_bid is None or best_ask is None:
+            return orders
+
+        spot_price = (best_bid + best_ask) / 2
+        T = 5 / 365  # 5 days to expiration in year fraction
+        r = 0.00
+
+        vouchers = {
+            "VOLCANIC_ROCK_VOUCHER_9500": 9500,
+            "VOLCANIC_ROCK_VOUCHER_9750": 9750,
+            "VOLCANIC_ROCK_VOUCHER_10000": 10000,
+            "VOLCANIC_ROCK_VOUCHER_10250": 10250,
+            "VOLCANIC_ROCK_VOUCHER_10500": 10500,
+        }
+
+        iv_data = []
+
+        for voucher, strike in vouchers.items():
+            if voucher not in state.order_depths:
+                continue
+
+            depth = state.order_depths[voucher]
+            v_bid = max(depth.buy_orders.keys(), default=None)
+            v_ask = min(depth.sell_orders.keys(), default=None)
+            if v_bid is None or v_ask is None:
+                continue
+
+            market_price = (v_bid + v_ask) / 2
+            iv = self.implied_volatility_call(spot_price, strike, T, r, market_price)
+            greeks = self.black_scholes_greeks(spot_price, strike, T, r, iv)
+
+            iv_data.append({
+                "voucher": voucher,
+                "strike": strike,
+                "iv": iv,
+                "greeks": greeks,
+                "price": market_price,
+                "bid": v_bid,
+                "ask": v_ask,
+                "depth": depth
+            })
+
+        if not iv_data:
+            return orders
+
+        iv_data.sort(key=lambda x: x["iv"])
+        cheap = iv_data[0]
+        expensive = iv_data[-1]
+
+        position_cheap = state.position.get(cheap["voucher"], 0)
+        position_exp = state.position.get(expensive["voucher"], 0)
+
+        buy_qty = min(5, 200 - position_cheap)
+        sell_qty = min(5, 200 + position_exp)
+
+        if buy_qty > 0:
+            orders.append(Order(cheap["voucher"], cheap["ask"], buy_qty))
+        if sell_qty > 0:
+            orders.append(Order(expensive["voucher"], expensive["bid"], -sell_qty))
+
+        net_delta = (cheap["greeks"]["delta"] * buy_qty) - (expensive["greeks"]["delta"] * sell_qty)
+        hedge_qty = round(-net_delta)
+        hedge_limit = 400
+        hedge_position = state.position.get(spot_product, 0)
+
+        if hedge_qty > 0 and hedge_position + hedge_qty <= hedge_limit:
+            orders.append(Order(spot_product, best_ask, hedge_qty))
+        elif hedge_qty < 0 and hedge_position + hedge_qty >= -hedge_limit:
+            orders.append(Order(spot_product, best_bid, hedge_qty))
+
+        return orders
     def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
         result = {}
         conversions = 0
@@ -769,62 +712,60 @@ class Trader:
                 trader_data = {}
         
         if trader_data:
-            self.kelp_price_history = trader_data.get("kelp_price_history", self.kelp_price_history)
-            self.ewma_mean_kelp = trader_data.get("ewma_mean_kelp", self.ewma_mean_kelp)
-            self.ewma_var_kelp = trader_data.get("ewma_var_kelp", self.ewma_var_kelp)
-            self.kelp_last_prices = trader_data.get("kelp_last_prices", self.kelp_last_prices)
             self.timeframe_data = trader_data.get("timeframe_data", self.timeframe_data)
             self.djembe_theoretical_prices = trader_data.get("djembe_theoretical_prices", self.djembe_theoretical_prices)
             self.djembe_actual_prices = trader_data.get("djembe_actual_prices", self.djembe_actual_prices)
-            self.squid_price_history = trader_data.get("squid_price_history", self.squid_price_history)
-            self.ewma_mean_squid = trader_data.get("ewma_mean_squid", self.ewma_mean_squid)
-            self.ewma_var_squid = trader_data.get("ewma_var_squid", self.ewma_var_squid)
-            self.squid_last_prices = trader_data.get("squid_last_prices", self.squid_last_prices)
-            self.jams_price_history = trader_data.get("jams_price_history", self.jams_price_history)
-            self.ewma_mean_jams = trader_data.get("ewma_mean_jams", self.ewma_mean_jams)
-            self.ewma_var_jams = trader_data.get("ewma_var_jams", self.ewma_var_jams)
-            self.jams_last_prices = trader_data.get("jams_last_prices", self.jams_last_prices)
+            self.ewma_mean = trader_data.get("ewma_mean", self.ewma_mean)
+            self.ewma_var = trader_data.get("ewma_var", self.ewma_var)
+            self.price_history = trader_data.get("price_history", self.price_history)
+            self.last_prices = trader_data.get("last_prices", self.last_prices)
+
+        if "RAINFOREST_RESIN" in state.order_depths:
+            result["RAINFOREST_RESIN"] = self.resin_strategy(state.order_depths["RAINFOREST_RESIN"], 2, state)
         
-        # if "RAINFOREST_RESIN" in state.order_depths:
-        #     result["RAINFOREST_RESIN"] = self.resin_strategy(state.order_depths["RAINFOREST_RESIN"], 2, state)
-        
-        # if "KELP" in state.order_depths:
-        #     result["KELP"] = self.kelp_strategy(state.order_depths["KELP"], state)
+        if "KELP" in state.order_depths:
+            result["KELP"] = self.commodity_strategy("KELP", state.order_depths["KELP"], state)
                 
-        # if "SQUID_INK" in state.order_depths:
-        #     result["SQUID_INK"] = self.squidink_strategy(state.order_depths["SQUID_INK"], state)
-                
+        if "SQUID_INK" in state.order_depths:
+            result["SQUID_INK"] = self.commodity_strategy("SQUID_INK", state.order_depths["SQUID_INK"], state)
+
+        # OPTIMIZE parameters        
         if "JAMS" in state.order_depths:
-            result["JAMS"] = self.jams_strategy(state.order_depths["JAMS"], state)
+            result["JAMS"] = self.commodity_strategy("JAMS", state.order_depths["JAMS"], state)
         
-        # if "CROISSANTS" in state.order_depths:
-        #     result["CROISSANTS"] = self.croissants_strategy(state.order_depths["CROISSANTS"], state)
+        if "CROISSANTS" in state.order_depths:
+            result["CROISSANTS"] = self.commodity_strategy("CROISSANTS", state.order_depths["CROISSANTS"], state)
         
-        # if "DJEMBES" in state.order_depths: 
-        #     result["DJEMBES"] = self.djembes_strategy(state.order_depths["DJEMBES"], state)
+        if "DJEMBES" in state.order_depths: 
+            result["DJEMBES"] = self.djembes_strategy(state.order_depths["DJEMBES"], state)
         
-        # if "PICNIC_BASKET1" in state.order_depths:
-        #     result["PICNIC_BASKET1"] = self.picnic_basket_1_strategy(state.order_depths["PICNIC_BASKET1"], state)
+        if "PICNIC_BASKET1" in state.order_depths:
+            result["PICNIC_BASKET1"] = self.picnic_basket_1_strategy(state.order_depths["PICNIC_BASKET1"], state)
         
-        # if "PICNIC_BASKET2" in state.order_depths:
-        #     result["PICNIC_BASKET2"] = self.picnic_basket_2_strategy(state.order_depths["PICNIC_BASKET2"], state)
-                
+        if "PICNIC_BASKET2" in state.order_depths:
+            result["PICNIC_BASKET2"] = self.picnic_basket_2_strategy(state.order_depths["PICNIC_BASKET2"], state)
+        # if "VOLCANIC_ROCK" in state.order_depths:
+        #     result["VOLCANIC_ROCK"] = self.volcanic_voucher_strategy(state)
+        
+        # if "VOLCANIC_ROCK_VOUCHER_9500" in state.order_depths:
+        #     result["VOLCANIC_ROCK_VOUCHER_9500"] = self.volcanic_voucher_strategy(state)
+        # if "VOLCANIC_ROCK_VOUCHER_9750" in state.order_depths:
+        #     result["VOLCANIC_ROCK_VOUCHER_9750"] = self.volcanic_voucher_strategy(state)
+        # if "VOLCANIC_ROCK_VOUCHER_10000" in state.order_depths:
+        #     result["VOLCANIC_ROCK_VOUCHER_10000"] = self.volcanic_voucher_strategy(state)
+        # if "VOLCANIC_ROCK_VOUCHER_10250" in state.order_depths:
+        #     result["VOLCANIC_ROCK_VOUCHER_10250"] = self.volcanic_voucher_strategy(state)
+        # if "VOLCANIC_ROCK_VOUCHER_10500" in state.order_depths:
+        #     result["VOLCANIC_ROCK_VOUCHER_10500"] = self.volcanic_voucher_strategy(state)
+
         trader_data = {
-            "kelp_price_history": self.kelp_price_history,
-            "ewma_mean_kelp": self.ewma_mean_kelp,
-            "ewma_var_kelp": self.ewma_var_kelp,
-            "kelp_last_prices": self.kelp_last_prices,
             "timeframe_data": self.timeframe_data,
             "djembe_theoretical_prices": self.djembe_theoretical_prices,
             "djembe_actual_prices": self.djembe_actual_prices,
-            "squid_price_history": self.squid_price_history,
-            "ewma_mean_squid": self.ewma_mean_squid,
-            "ewma_var_squid": self.ewma_var_squid,
-            "squid_last_prices": self.squid_last_prices,
-            "jams_price_history": self.jams_price_history,
-            "ewma_mean_jams": self.ewma_mean_jams,
-            "ewma_var_jams": self.ewma_var_jams,
-            "jams_last_prices": self.jams_last_prices,
+            "ewma_mean": self.ewma_mean,
+            "ewma_var": self.ewma_var,
+            "price_history": self.price_history,
+            "last_prices": self.last_prices,
 
         }
         

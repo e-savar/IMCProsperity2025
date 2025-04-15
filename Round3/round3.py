@@ -720,30 +720,30 @@ class Trader:
             self.price_history = trader_data.get("price_history", self.price_history)
             self.last_prices = trader_data.get("last_prices", self.last_prices)
 
-        # if "RAINFOREST_RESIN" in state.order_depths:
-        #     result["RAINFOREST_RESIN"] = self.resin_strategy(state.order_depths["RAINFOREST_RESIN"], 2, state)
+        if "RAINFOREST_RESIN" in state.order_depths:
+            result["RAINFOREST_RESIN"] = self.resin_strategy(state.order_depths["RAINFOREST_RESIN"], 2, state)
         
-        # if "KELP" in state.order_depths:
-        #     result["KELP"] = self.commodity_strategy("KELP", state.order_depths["KELP"], state)
+        if "KELP" in state.order_depths:
+            result["KELP"] = self.commodity_strategy("KELP", state.order_depths["KELP"], state)
                 
         if "SQUID_INK" in state.order_depths:
             result["SQUID_INK"] = self.commodity_strategy("SQUID_INK", state.order_depths["SQUID_INK"], state)
 
-        # # OPTIMIZE parameters        
-        # if "JAMS" in state.order_depths:
-        #     result["JAMS"] = self.commodity_strategy("JAMS", state.order_depths["JAMS"], state)
+        # OPTIMIZE parameters        
+        if "JAMS" in state.order_depths:
+            result["JAMS"] = self.commodity_strategy("JAMS", state.order_depths["JAMS"], state)
         
-        # if "CROISSANTS" in state.order_depths:
-        #     result["CROISSANTS"] = self.commodity_strategy("CROISSANTS", state.order_depths["CROISSANTS"], state)
+        if "CROISSANTS" in state.order_depths:
+            result["CROISSANTS"] = self.commodity_strategy("CROISSANTS", state.order_depths["CROISSANTS"], state)
         
-        # if "DJEMBES" in state.order_depths: 
-        #     result["DJEMBES"] = self.djembes_strategy(state.order_depths["DJEMBES"], state)
+        if "DJEMBES" in state.order_depths: 
+            result["DJEMBES"] = self.djembes_strategy(state.order_depths["DJEMBES"], state)
         
-        # if "PICNIC_BASKET1" in state.order_depths:
-        #     result["PICNIC_BASKET1"] = self.picnic_basket_1_strategy(state.order_depths["PICNIC_BASKET1"], state)
+        if "PICNIC_BASKET1" in state.order_depths:
+            result["PICNIC_BASKET1"] = self.picnic_basket_1_strategy(state.order_depths["PICNIC_BASKET1"], state)
         
-        # if "PICNIC_BASKET2" in state.order_depths:
-        #     result["PICNIC_BASKET2"] = self.picnic_basket_2_strategy(state.order_depths["PICNIC_BASKET2"], state)
+        if "PICNIC_BASKET2" in state.order_depths:
+            result["PICNIC_BASKET2"] = self.picnic_basket_2_strategy(state.order_depths["PICNIC_BASKET2"], state)
         # if "VOLCANIC_ROCK" in state.order_depths:
         #     result["VOLCANIC_ROCK"] = self.volcanic_voucher_strategy(state)
         

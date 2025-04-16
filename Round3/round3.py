@@ -209,6 +209,9 @@ class Trader:
         self.ewma_alpha = 0.2
         self.rolling_window = 20
         self.momentum_window = 5
+        self.recent_spot_prices = {
+            "VOLCANIC_ROCK": [0] * 3,
+        }
 
 
     def clear_position_order(self, orders: List[Order], order_depth: OrderDepth, position: int,
@@ -669,7 +672,67 @@ class Trader:
                 position -= max_order_size
 
         return orders
-    
+    def premium_voucher_strategy(self, voucher: str, strike: int, state: TradingState) -> List[Order]:
+        orders = []
+        spot_product = "VOLCANIC_ROCK"
+
+        if spot_product not in state.order_depths or voucher not in state.order_depths:
+            return orders
+
+        # Get current spot price
+        best_bid = max(state.order_depths[spot_product].buy_orders.keys(), default=None)
+        best_ask = min(state.order_depths[spot_product].sell_orders.keys(), default=None)
+        if best_bid is None or best_ask is None:
+            return orders
+        spot_price = (best_bid + best_ask) / 2
+
+        # --- Example momentum estimate (replace with better memory/tracking if available)
+        recent_spots = self.recent_spot_prices.get(spot_product, [spot_price] * 3)
+        recent_spots = recent_spots[-2:] + [spot_price]
+        self.recent_spot_prices[spot_product] = recent_spots
+        avg_recent = sum(recent_spots[:-1]) / len(recent_spots[:-1])
+        upward_momentum = spot_price > avg_recent
+
+        # Voucher price
+        depth = state.order_depths[voucher]
+        v_bid = max(depth.buy_orders.keys(), default=None)
+        v_ask = min(depth.sell_orders.keys(), default=None)
+        if v_bid is None or v_ask is None:
+            return orders
+        market_price = (v_bid + v_ask) / 2
+
+        position = state.position.get(voucher, 0)
+        max_voucher = 200
+        max_order_size = 5
+
+        # Distance from strike
+        distance = strike - spot_price
+
+        # Fair price heuristic: linearly increase toward 400 as spot approaches strike
+        if distance < 0:
+            fair_price = 400  # In the money
+        elif distance > 400:
+            fair_price = 0  # Deep OTM
+        else:
+            fair_price = 400 * (1 - distance / 400)
+
+        edge = fair_price - market_price
+
+        # Buy signal
+        if upward_momentum and edge > 50 and position < max_voucher:
+            qty = min(depth.sell_orders[v_ask], max_order_size, max_voucher - position)
+            if qty > 0:
+                orders.append(Order(voucher, v_ask, qty))
+
+        # Sell signal
+        elif (not upward_momentum and edge < -50 and position > -max_voucher) or (position > 0 and distance > 400):
+            qty = min(depth.buy_orders[v_bid], max_order_size, position + max_voucher)
+            if qty > 0:
+                orders.append(Order(voucher, v_bid, -qty))
+
+        return orders
+
+
     def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
         result = {}
         conversions = 0
@@ -689,6 +752,7 @@ class Trader:
             self.ewma_var = trader_data.get("ewma_var", self.ewma_var)
             self.price_history = trader_data.get("price_history", self.price_history)
             self.last_prices = trader_data.get("last_prices", self.last_prices)
+            self.recent_spot_prices = trader_data.get("recent_spot_prices", self.recent_spot_prices)
 
         if "RAINFOREST_RESIN" in state.order_depths:
             result["RAINFOREST_RESIN"] = self.resin_strategy(state.order_depths["RAINFOREST_RESIN"], 2, state)
@@ -723,11 +787,11 @@ class Trader:
         if "VOLCANIC_ROCK_VOUCHER_9750" in state.order_depths:
             result["VOLCANIC_ROCK_VOUCHER_9750"] = self.volcanic_voucher_strategy("VOLCANIC_ROCK_VOUCHER_9750", 9750, state)
         if "VOLCANIC_ROCK_VOUCHER_10000" in state.order_depths:
-            result["VOLCANIC_ROCK_VOUCHER_10000"] = self.volcanic_voucher_strategy("VOLCANIC_ROCK_VOUCHER_10000", 10000, state)
+            result["VOLCANIC_ROCK_VOUCHER_10000"] = self.premium_voucher_strategy("VOLCANIC_ROCK_VOUCHER_10000", 10000, state)
         if "VOLCANIC_ROCK_VOUCHER_10250" in state.order_depths:
-            result["VOLCANIC_ROCK_VOUCHER_10250"] = self.volcanic_voucher_strategy("VOLCANIC_ROCK_VOUCHER_10250", 10250, state)
+            result["VOLCANIC_ROCK_VOUCHER_10250"] = self.premium_voucher_strategy("VOLCANIC_ROCK_VOUCHER_10250", 10250, state)
         if "VOLCANIC_ROCK_VOUCHER_10500" in state.order_depths:
-            result["VOLCANIC_ROCK_VOUCHER_10500"] = self.volcanic_voucher_strategy("VOLCANIC_ROCK_VOUCHER_10500", 10500, state)
+            result["VOLCANIC_ROCK_VOUCHER_10500"] = self.premium_voucher_strategy("VOLCANIC_ROCK_VOUCHER_10500", 10500, state)
 
         trader_data = {
             "timeframe_data": self.timeframe_data,
@@ -737,6 +801,7 @@ class Trader:
             "ewma_var": self.ewma_var,
             "price_history": self.price_history,
             "last_prices": self.last_prices,
+            "recent_spot_prices": self.recent_spot_prices,
 
         }
         

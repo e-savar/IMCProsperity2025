@@ -220,6 +220,7 @@ class Trader:
         self.momentum_window = 5
         self.recent_spot_prices = {
             "VOLCANIC_ROCK": [0] * 3,
+            "VOLCANIC_ROCK_VOUCHER_10000": [0] * 3,
         }
         self.prev_spot = None
         self.max_pos = 200
@@ -228,6 +229,7 @@ class Trader:
             "VOLCANIC_ROCK_VOUCHER_10250": 10250,
             "VOLCANIC_ROCK_VOUCHER_10500": 10500,
         }
+        self.time_to_expiry = 1.0  # scale 1.0 = start, 0.0 = expiry
     def clear_position_order(self, orders: List[Order], order_depth: OrderDepth, position: int,
                              position_limit: int, product: str, buy_order_volume: int,
                              sell_order_volume: int, fair_value: float, width: int) -> tuple:
@@ -753,9 +755,17 @@ class Trader:
                 position -= max_order_size
 
         return orders
+    
+    def sigmoid(self, x):
+        x = max(min(x, 100), -100)  # Clamp x to [-100, 100]
+        return 1 / (1 + math.exp(-x))
+
+
     def premium_voucher_strategy(self, voucher: str, strike: int, state: TradingState) -> List[Order]:
         orders = []
         spot_product = "VOLCANIC_ROCK"
+        window = getattr(self, "rolling_window", 5)
+        time_to_expiry = getattr(self, "time_to_expiry", 1.0)  # scale 1.0 = start, 0.0 = expiry
 
         if spot_product not in state.order_depths or voucher not in state.order_depths:
             return orders
@@ -767,12 +777,19 @@ class Trader:
             return orders
         spot_price = (best_bid + best_ask) / 2
 
-        # --- Example momentum estimate (replace with better memory/tracking if available)
-        recent_spots = self.recent_spot_prices.get(spot_product, [spot_price] * 3)
-        recent_spots = recent_spots[-2:] + [spot_price]
+        # Maintain rolling average
+        if spot_product not in self.recent_spot_prices:
+            self.recent_spot_prices[spot_product] = [spot_price] * window
+
+        recent_spots = self.recent_spot_prices[spot_product]
+        recent_spots.append(spot_price)
+        if len(recent_spots) > window:
+            recent_spots.pop(0)
         self.recent_spot_prices[spot_product] = recent_spots
-        avg_recent = sum(recent_spots[:-1]) / len(recent_spots[:-1])
-        upward_momentum = spot_price > avg_recent
+        rolling_avg = sum(recent_spots) / len(recent_spots)
+
+        # Momentum
+        upward_momentum = spot_price > rolling_avg
 
         # Voucher price
         depth = state.order_depths[voucher]
@@ -786,33 +803,38 @@ class Trader:
         max_voucher = 200
         max_order_size = 5
 
-        # Distance from strike
-        distance = strike - spot_price
+        # === 🔥 Fair price estimate with decaying time and sigmoid-like probability ===
+        # payout = 400 if spot > strike else 0
+        # estimate fair value = payout * probability * time_to_expiry
+        volatility_factor = 10  # adjust this for how steep the sigmoid is
 
-        # Fair price heuristic: linearly increase toward 400 as spot approaches strike
-        if distance < 0:
-            fair_price = 400  # In the money
-        elif distance > 400:
-            fair_price = 0  # Deep OTM
-        else:
-            fair_price = 400 * (1 - distance / 400)
+        # Dynamic payout: only get value if rolling average is above strike
+        payout = max(0, rolling_avg - strike)
+
+        # Estimate probability of exercising the voucher
+        probability = self.sigmoid((rolling_avg - strike) / volatility_factor)
+
+        # Final fair value estimate
+        fair_price = payout * probability * time_to_expiry
 
         edge = fair_price - market_price
 
         # Buy signal
-        if upward_momentum and edge > 50 and position < max_voucher:
+        if upward_momentum and edge > 20 and position < max_voucher:
             qty = min(depth.sell_orders[v_ask], max_order_size, max_voucher - position)
             if qty > 0:
                 orders.append(Order(voucher, v_ask, qty))
 
         # Sell signal
-        elif (not upward_momentum and edge < -50 and position > -max_voucher) or (position > 0 and distance > 400):
+        elif (not upward_momentum and edge < -20 and position > -max_voucher):
             qty = min(depth.buy_orders[v_bid], max_order_size, position + max_voucher)
             if qty > 0:
                 orders.append(Order(voucher, v_bid, -qty))
 
-        return orders
+        # Decay time to expiry (simple linear decay)
+        self.time_to_expiry = max(0.0, self.time_to_expiry - 0.01)
 
+        return orders
     def volcanic_sniper(self, state: TradingState) -> List[Order]:
         orders = []
         spot_product = "VOLCANIC_ROCK"

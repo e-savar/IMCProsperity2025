@@ -159,48 +159,56 @@ class Trader:
             "SQUID_INK": 50,
             "JAMS": 350,
             'CROISSANTS': 250,
+            "VOLCANIC_ROCK": 400,
         }
         self.base_spreads = {
             "KELP": 1.3,
             "SQUID_INK": 1.1,
             "JAMS": 1.5,
             'CROISSANTS': 1.5,
+            "VOLCANIC_ROCK": 5,
         }
         self.inventory_factor = {
             "KELP": -0.2,
             "SQUID_INK": -0.3,
             "JAMS": -0.25,
             'CROISSANTS': -0.4,
+            "VOLCANIC_ROCK": -0.25,
         }
         self.momentum_factor = {
             "KELP": 0.1,
             "SQUID_INK": 0.65,
             "JAMS": 0.5,
             'CROISSANTS': 0.25,
+            "VOLCANIC_ROCK": 0.3,
         }
         self.ewma_mean = {
             "KELP": None,
             "SQUID_INK": None,
             "JAMS": None,
             "CROISSANTS": None,
+            "VOLCANIC_ROCK": None,
         }
         self.ewma_var = {
             "KELP": None,
             "SQUID_INK": None,
             "JAMS": None,
             "CROISSANTS": None,
+            "VOLCANIC_ROCK": None,
         }
         self.price_history = {
             "KELP": [],
             "SQUID_INK": [],
             "JAMS": [],
             "CROISSANTS": [],
+            "VOLCANIC_ROCK": [],
         }
         self.last_prices = {
             "KELP": [],
             "SQUID_INK": [],
             "JAMS": [],
             "CROISSANTS": [],
+            "VOLCANIC_ROCK": [],
         }
         self.volatility_spread_multiplier = 1.7
         self.lookback_window = 100
@@ -596,72 +604,24 @@ class Trader:
         orders.append(Order("PICNIC_BASKET2", int(passive_sell_price), -passive_quantity))
 
         return orders
-    # Standard normal CDF approximation (Abramowitz and Stegun formula)
-    def norm_cdf(self, x):
-        k = 1.0 / (1.0 + 0.2316419 * abs(x))
-        a1, a2, a3, a4, a5 = 0.319381530, -0.356563782, 1.781477937, -1.821255978, 1.330274429
-        poly = ((((a5 * k + a4) * k + a3) * k + a2) * k + a1)
-        approx = 1.0 - (1.0 / math.sqrt(2 * math.pi)) * math.exp(-0.5 * x * x) * poly
-        return approx if x >= 0 else 1.0 - approx
-
-    # Standard normal PDF
-    def norm_pdf(self, x):
-        return math.exp(-0.5 * x**2) / math.sqrt(2 * math.pi)
-
-    # Black-Scholes call price
-    def black_scholes_call(self, S, K, T, r, sigma):
-        d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
-        d2 = d1 - sigma * math.sqrt(T)
-        return S * self.norm_cdf(d1) - K * math.exp(-r * T) * self.norm_cdf(d2)
-
-    # Greeks for call options
-    def black_scholes_greeks(self, S, K, T, r, sigma):
-        d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
-        d2 = d1 - sigma * math.sqrt(T)
-        delta = self.norm_cdf(d1)
-        gamma = self.norm_pdf(d1) / (S * sigma * math.sqrt(T))
-        vega = S * self.norm_pdf(d1) * math.sqrt(T)
-        theta = (-S * self.norm_pdf(d1) * sigma / (2 * math.sqrt(T)) 
-                - r * K * math.exp(-r * T) * self.norm_cdf(d2))
-        rho = K * T * math.exp(-r * T) * self.norm_cdf(d2)
-        return {
-            "delta": delta,
-            "gamma": gamma,
-            "vega": vega,
-            "theta": theta,
-            "rho": rho
-        }
-
-    # Implied Volatility using bisection method
-    def implied_volatility_call(self, S, K, T, r, market_price, tol=1e-5, max_iter=100):
-        low, high = 0.0001, 5.0
-        for _ in range(max_iter):
-            mid = (low + high) / 2
-            price = self.black_scholes_call(S, K, T, r, mid)
-            if abs(price - market_price) < tol:
-                return mid
-            if price < market_price:
-                low = mid
-            else:
-                high = mid
-        return mid
 
     def volcanic_voucher_strategy(self, state: TradingState) -> List[Order]:
         orders = []
-
         spot_product = "VOLCANIC_ROCK"
-        spot_depth = state.order_depths.get(spot_product, None)
-        if not spot_depth or not spot_depth.buy_orders or not spot_depth.sell_orders:
+
+        if spot_product not in state.order_depths:
             return orders
 
-        best_bid = max(spot_depth.buy_orders.keys(), default=None)
-        best_ask = min(spot_depth.sell_orders.keys(), default=None)
+        best_bid = max(state.order_depths[spot_product].buy_orders.keys(), default=None)
+        best_ask = min(state.order_depths[spot_product].sell_orders.keys(), default=None)
+
         if best_bid is None or best_ask is None:
             return orders
 
         spot_price = (best_bid + best_ask) / 2
-        T = 5 / 365  # 5 days to expiration in year fraction
+        T = 5 / 365
         r = 0.00
+        sigma = 0.20
 
         vouchers = {
             "VOLCANIC_ROCK_VOUCHER_9500": 9500,
@@ -671,62 +631,96 @@ class Trader:
             "VOLCANIC_ROCK_VOUCHER_10500": 10500,
         }
 
-        iv_data = []
+        positions = {v: state.position.get(v, 0) for v in vouchers}
 
+        data = []
         for voucher, strike in vouchers.items():
             if voucher not in state.order_depths:
                 continue
-
             depth = state.order_depths[voucher]
             v_bid = max(depth.buy_orders.keys(), default=None)
             v_ask = min(depth.sell_orders.keys(), default=None)
             if v_bid is None or v_ask is None:
                 continue
-
             market_price = (v_bid + v_ask) / 2
-            iv = self.implied_volatility_call(spot_price, strike, T, r, market_price)
-            greeks = self.black_scholes_greeks(spot_price, strike, T, r, iv)
-
-            iv_data.append({
+            theo_price = self.binomial_tree_call(spot_price, strike, T, r, sigma)
+            greeks = self.binomial_tree_greeks(spot_price, strike, T, r, sigma)
+            data.append({
                 "voucher": voucher,
                 "strike": strike,
-                "iv": iv,
+                "theo_price": theo_price,
+                "market_price": market_price,
+                "edge": theo_price - market_price,
                 "greeks": greeks,
-                "price": market_price,
                 "bid": v_bid,
                 "ask": v_ask,
                 "depth": depth
             })
 
-        if not iv_data:
-            return orders
+        data.sort(key=lambda x: x["edge"], reverse=True)
 
-        iv_data.sort(key=lambda x: x["iv"])
-        cheap = iv_data[0]
-        expensive = iv_data[-1]
+        for item in data:
+            voucher = item["voucher"]
+            edge = item["edge"]
+            bid = item["bid"]
+            ask = item["ask"]
+            depth = item["depth"]
 
-        position_cheap = state.position.get(cheap["voucher"], 0)
-        position_exp = state.position.get(expensive["voucher"], 0)
-
-        buy_qty = min(5, 200 - position_cheap)
-        sell_qty = min(5, 200 + position_exp)
-
-        if buy_qty > 0:
-            orders.append(Order(cheap["voucher"], cheap["ask"], buy_qty))
-        if sell_qty > 0:
-            orders.append(Order(expensive["voucher"], expensive["bid"], -sell_qty))
-
-        net_delta = (cheap["greeks"]["delta"] * buy_qty) - (expensive["greeks"]["delta"] * sell_qty)
-        hedge_qty = round(-net_delta)
-        hedge_limit = 400
-        hedge_position = state.position.get(spot_product, 0)
-
-        if hedge_qty > 0 and hedge_position + hedge_qty <= hedge_limit:
-            orders.append(Order(spot_product, best_ask, hedge_qty))
-        elif hedge_qty < 0 and hedge_position + hedge_qty >= -hedge_limit:
-            orders.append(Order(spot_product, best_bid, hedge_qty))
+            if edge > 0:
+                qty = min(min(depth.sell_orders[ask], 1), 200 - positions[voucher]) if ask in depth.sell_orders else 0
+                if qty > 0:
+                    orders.append(Order(voucher, ask, qty))
+            elif edge < 0:
+                qty = min(depth.buy_orders[bid], 1) if bid in depth.buy_orders else 0
+                if qty > 0:
+                    orders.append(Order(voucher, bid, -min(qty, 200 + positions[voucher])))
 
         return orders
+
+    def binomial_tree_call(self, S, K, T, r, sigma, n=20):
+        dt = T / n
+        u = math.exp(sigma * math.sqrt(dt))
+        d = 1 / u
+        p = (math.exp(r * dt) - d) / (u - d)
+
+        ST = [S * (u ** (n - i)) * (d ** i) for i in range(n + 1)]
+        C = [max(0, st - K) for st in ST]
+
+        for j in range(n - 1, -1, -1):
+            for i in range(j + 1):
+                C[i] = (p * C[i] + (1 - p) * C[i + 1]) * math.exp(-r * dt)
+
+        return C[0]
+
+    def binomial_tree_greeks(self, S, K, T, r, sigma, n=20):
+        """
+        Calculates the Greeks (delta, gamma, theta) using a binomial tree model.
+        Note: This method has a nested loop structure, which may impact performance for large n.
+        Consider using vectorized libraries or alternative methods for high-performance requirements.
+        """
+        dt = T / n
+        u = math.exp(sigma * math.sqrt(dt))
+        d = 1 / u
+        p = (math.exp(r * dt) - d) / (u - d)
+
+        # Precompute stock prices and option values at maturity
+        ST = [S * (u ** (n - i)) * (d ** i) for i in range(n + 1)]
+        C = [max(0, st - K) for st in ST]
+
+        # Backward induction to calculate option values
+        discount_factor = math.exp(-r * dt)
+        for j in range(n - 1, -1, -1):
+            for i in range(j + 1):
+                C[i] = (p * C[i] + (1 - p) * C[i + 1]) * discount_factor
+
+        # Calculate Greeks
+        delta = (C[0] - C[1]) / (ST[0] - ST[1])
+        gamma = ((C[2] - C[1]) / (ST[2] - ST[1]) - delta) / (ST[2] - ST[0])
+        theta = (C[1] - C[0]) / dt
+
+        return {"delta": delta, "gamma": gamma, "theta": theta}
+
+
     def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
         result = {}
         conversions = 0
@@ -747,21 +741,21 @@ class Trader:
             self.price_history = trader_data.get("price_history", self.price_history)
             self.last_prices = trader_data.get("last_prices", self.last_prices)
 
-        # if "RAINFOREST_RESIN" in state.order_depths:
-        #     result["RAINFOREST_RESIN"] = self.resin_strategy(state.order_depths["RAINFOREST_RESIN"], 2, state)
+        if "RAINFOREST_RESIN" in state.order_depths:
+            result["RAINFOREST_RESIN"] = self.resin_strategy(state.order_depths["RAINFOREST_RESIN"], 2, state)
         
-        # if "KELP" in state.order_depths:
-        #     result["KELP"] = self.commodity_strategy("KELP", state.order_depths["KELP"], state)
+        if "KELP" in state.order_depths:
+            result["KELP"] = self.commodity_strategy("KELP", state.order_depths["KELP"], state)
                 
-        # if "SQUID_INK" in state.order_depths:
-        #     result["SQUID_INK"] = self.commodity_strategy("SQUID_INK", state.order_depths["SQUID_INK"], state)
+        if "SQUID_INK" in state.order_depths:
+            result["SQUID_INK"] = self.commodity_strategy("SQUID_INK", state.order_depths["SQUID_INK"], state)
 
-        # # OPTIMIZE parameters        
-        # if "JAMS" in state.order_depths:
-        #     result["JAMS"] = self.commodity_strategy("JAMS", state.order_depths["JAMS"], state)
+        # OPTIMIZE parameters        
+        if "JAMS" in state.order_depths:
+            result["JAMS"] = self.commodity_strategy("JAMS", state.order_depths["JAMS"], state)
         
-        # if "CROISSANTS" in state.order_depths:
-        #     result["CROISSANTS"] = self.commodity_strategy("CROISSANTS", state.order_depths["CROISSANTS"], state)
+        if "CROISSANTS" in state.order_depths:
+            result["CROISSANTS"] = self.commodity_strategy("CROISSANTS", state.order_depths["CROISSANTS"], state)
         
         # if "DJEMBES" in state.order_depths: 
         #     result["DJEMBES"] = self.djembes_strategy(state.order_depths["DJEMBES"], state)
@@ -771,19 +765,20 @@ class Trader:
         
         if "PICNIC_BASKET2" in state.order_depths:
             result["PICNIC_BASKET2"] = self.picnic_basket_2_strategy(state.order_depths["PICNIC_BASKET2"], state)
-        # if "VOLCANIC_ROCK" in state.order_depths:
-        #     result["VOLCANIC_ROCK"] = self.volcanic_voucher_strategy(state)
         
-        # if "VOLCANIC_ROCK_VOUCHER_9500" in state.order_depths:
-        #     result["VOLCANIC_ROCK_VOUCHER_9500"] = self.volcanic_voucher_strategy(state)
-        # if "VOLCANIC_ROCK_VOUCHER_9750" in state.order_depths:
-        #     result["VOLCANIC_ROCK_VOUCHER_9750"] = self.volcanic_voucher_strategy(state)
-        # if "VOLCANIC_ROCK_VOUCHER_10000" in state.order_depths:
-        #     result["VOLCANIC_ROCK_VOUCHER_10000"] = self.volcanic_voucher_strategy(state)
-        # if "VOLCANIC_ROCK_VOUCHER_10250" in state.order_depths:
-        #     result["VOLCANIC_ROCK_VOUCHER_10250"] = self.volcanic_voucher_strategy(state)
-        # if "VOLCANIC_ROCK_VOUCHER_10500" in state.order_depths:
-        #     result["VOLCANIC_ROCK_VOUCHER_10500"] = self.volcanic_voucher_strategy(state)
+        if "VOLCANIC_ROCK" in state.order_depths:
+            result["VOLCANIC_ROCK"] = self.commodity_strategy("VOLCANIC_ROCK", state.order_depths["CROISSANTS"], state)
+        
+        if "VOLCANIC_ROCK_VOUCHER_9500" in state.order_depths:
+            result["VOLCANIC_ROCK_VOUCHER_9500"] = self.volcanic_voucher_strategy(state)
+        if "VOLCANIC_ROCK_VOUCHER_9750" in state.order_depths:
+            result["VOLCANIC_ROCK_VOUCHER_9750"] = self.volcanic_voucher_strategy(state)
+        if "VOLCANIC_ROCK_VOUCHER_10000" in state.order_depths:
+            result["VOLCANIC_ROCK_VOUCHER_10000"] = self.volcanic_voucher_strategy(state)
+        if "VOLCANIC_ROCK_VOUCHER_10250" in state.order_depths:
+            result["VOLCANIC_ROCK_VOUCHER_10250"] = self.volcanic_voucher_strategy(state)
+        if "VOLCANIC_ROCK_VOUCHER_10500" in state.order_depths:
+            result["VOLCANIC_ROCK_VOUCHER_10500"] = self.volcanic_voucher_strategy(state)
 
         trader_data = {
             "timeframe_data": self.timeframe_data,

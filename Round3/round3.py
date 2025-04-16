@@ -605,7 +605,7 @@ class Trader:
 
         return orders
 
-    def volcanic_voucher_strategy(self, state: TradingState) -> List[Order]:
+    def volcanic_voucher_strategy(self, voucher: str, strike: int, state: TradingState) -> List[Order]:
         orders = []
 
         spot_product = "VOLCANIC_ROCK"
@@ -619,67 +619,58 @@ class Trader:
 
         spot_price = (best_bid + best_ask) / 2
 
-        vouchers = {
-            "VOLCANIC_ROCK_VOUCHER_9500": 9500,
-            "VOLCANIC_ROCK_VOUCHER_9750": 9750,
-            "VOLCANIC_ROCK_VOUCHER_10000": 10000,
-            "VOLCANIC_ROCK_VOUCHER_10250": 10250,
-            "VOLCANIC_ROCK_VOUCHER_10500": 10500,
-        }
-
         u = 0.03  # 3% up move in spot
         time_value = 100
         edge_threshold = 50
         max_order_size = 5
         max_voucher = 200
 
-        for voucher, strike in vouchers.items():
-            if voucher not in state.order_depths:
-                continue
+        if voucher not in state.order_depths:
+            return []
 
-            depth = state.order_depths[voucher]
-            v_bid = max(depth.buy_orders.keys(), default=None)
-            v_ask = min(depth.sell_orders.keys(), default=None)
-            if v_bid is None or v_ask is None:
-                continue
+        depth = state.order_depths[voucher]
+        v_bid = max(depth.buy_orders.keys(), default=None)
+        v_ask = min(depth.sell_orders.keys(), default=None)
+        if v_bid is None or v_ask is None:
+            return []
 
-            market_price = (v_bid + v_ask) / 2
-            position = state.position.get(voucher, 0)
+        market_price = (v_bid + v_ask) / 2
+        position = state.position.get(voucher, 0)
 
-            # Fair price from binomial estimate
-            S_up = spot_price * (1 + u)
-            theo = max(0, 0.5 * (S_up - strike)) + time_value
-            edge = theo - market_price
+        # Fair price from binomial estimate
+        S_up = spot_price * (1 + u)
+        theo = max(0, 0.5 * (S_up - strike)) + time_value
+        edge = theo - market_price
 
-            # Buy undervalued
-            if edge > edge_threshold and position < max_voucher:
-                available_qty = depth.sell_orders[v_ask]
-                qty = min(available_qty, max_order_size, max_voucher - position)
-                if qty > 0 and position + qty < max_voucher:
-                    orders.append(Order(voucher, v_ask, qty))
-                    position += qty
+        # Buy undervalued
+        if edge > edge_threshold and position < max_voucher:
+            available_qty = depth.sell_orders[v_ask]
+            qty = min(available_qty, max_order_size, max_voucher - position)
+            if qty > 0 and position + qty < max_voucher:
+                orders.append(Order(voucher, v_ask, qty))
+                position += qty
 
-            # Sell overvalued
-            elif edge < -edge_threshold and position > -max_voucher:
-                available_qty = depth.buy_orders[v_bid]
-                qty = min(available_qty, max_order_size, position + max_voucher)
-                if qty > 0 and position - qty > -max_voucher:
-                    orders.append(Order(voucher, v_bid, -qty))
-                    position -= qty
+        # Sell overvalued
+        elif edge < -edge_threshold and position > -max_voucher:
+            available_qty = depth.buy_orders[v_bid]
+            qty = min(available_qty, max_order_size, position + max_voucher)
+            if qty > 0 and position - qty > -max_voucher:
+                orders.append(Order(voucher, v_bid, -qty))
+                position -= qty
 
-            # Passive orders (only place if still within bounds)
-            else:
-                # Passive buy
-                if position + max_order_size < max_voucher:
-                    buy_price = int(theo - 100)
-                    orders.append(Order(voucher, buy_price, max_order_size))
-                    position += max_order_size
+        # Passive orders (only place if still within bounds)
+        else:
+            # Passive buy
+            if position + max_order_size < max_voucher:
+                buy_price = int(theo - 100)
+                orders.append(Order(voucher, buy_price, max_order_size))
+                position += max_order_size
 
-                # Passive sell
-                if position - max_order_size > -max_voucher:
-                    sell_price = int(theo + 100)
-                    orders.append(Order(voucher, sell_price, -max_order_size))
-                    position -= max_order_size
+            # Passive sell
+            if position - max_order_size > -max_voucher:
+                sell_price = int(theo + 100)
+                orders.append(Order(voucher, sell_price, -max_order_size))
+                position -= max_order_size
 
         return orders
 
@@ -776,15 +767,15 @@ class Trader:
             result["VOLCANIC_ROCK"] = self.commodity_strategy("VOLCANIC_ROCK", state.order_depths["CROISSANTS"], state)
         
         if "VOLCANIC_ROCK_VOUCHER_9500" in state.order_depths:
-            result["VOLCANIC_ROCK_VOUCHER_9500"] = self.volcanic_voucher_strategy(state)
+            result["VOLCANIC_ROCK_VOUCHER_9500"] = self.volcanic_voucher_strategy("VOLCANIC_ROCK_VOUCHER_9500", 9500, state)
         if "VOLCANIC_ROCK_VOUCHER_9750" in state.order_depths:
-            result["VOLCANIC_ROCK_VOUCHER_9750"] = self.volcanic_voucher_strategy(state)
+            result["VOLCANIC_ROCK_VOUCHER_9750"] = self.volcanic_voucher_strategy("VOLCANIC_ROCK_VOUCHER_9750", 9750, state)
         if "VOLCANIC_ROCK_VOUCHER_10000" in state.order_depths:
-            result["VOLCANIC_ROCK_VOUCHER_10000"] = self.volcanic_voucher_strategy(state)
+            result["VOLCANIC_ROCK_VOUCHER_10000"] = self.volcanic_voucher_strategy("VOLCANIC_ROCK_VOUCHER_10000", 10000, state)
         if "VOLCANIC_ROCK_VOUCHER_10250" in state.order_depths:
-            result["VOLCANIC_ROCK_VOUCHER_10250"] = self.volcanic_voucher_strategy(state)
+            result["VOLCANIC_ROCK_VOUCHER_10250"] = self.volcanic_voucher_strategy("VOLCANIC_ROCK_VOUCHER_10250", 10250, state)
         if "VOLCANIC_ROCK_VOUCHER_10500" in state.order_depths:
-            result["VOLCANIC_ROCK_VOUCHER_10500"] = self.volcanic_voucher_strategy(state)
+            result["VOLCANIC_ROCK_VOUCHER_10500"] = self.volcanic_voucher_strategy("VOLCANIC_ROCK_VOUCHER_10500", 10500, state)
 
         trader_data = {
             "timeframe_data": self.timeframe_data,

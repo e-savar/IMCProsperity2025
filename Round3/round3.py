@@ -134,6 +134,7 @@ class Trader:
         self.djembe_actual_prices = []
         self.djembe_window = 20  # Lookback window size
         self.djembe_spread_history = []
+        self.djembes_basket_history = []
 
         # PICNIC_BASKET_1 parameters
         # contain 6 croissants, 3 jams, 1 DJEMBES
@@ -388,6 +389,8 @@ class Trader:
             orders.append(Order(product, quote_ask, -ask_volume))
         return orders
     
+    # NOT CURRENTLY USED
+    # PLEASE REFER TO DJEMBES_BASKET COMPARISON STRATEGY
     def djembes_strategy(self, order_depth: OrderDepth, state: TradingState) -> List[Order]:
         orders = []
         product = "DJEMBES"  # Corrected product name
@@ -454,7 +457,7 @@ class Trader:
         
         # Base order size
         order_size = 1
-        
+
         # Trading logic
         if price_diff > buy_threshold:
             # DJEMBES is undervalued based on basket prices
@@ -515,6 +518,71 @@ class Trader:
                     
                 sell_volume = min(5, position_limit + position)
                 orders.append(Order(product, ask_price, -sell_volume))
+        
+        return orders
+
+    # THIS IS THE CURRENTLY USED DJEMBES STRATEGY
+    def djembes_basket_comparison_strategy(self, state: TradingState) -> List[Order]:
+        orders = []
+        product = "DJEMBES"
+        position = state.position.get(product, 0)
+        position_limit = 60
+        
+        # Ensure that both basket order depths and DJEMBES order depth are available
+        if ("PICNIC_BASKET1" not in state.order_depths or
+            "PICNIC_BASKET2" not in state.order_depths or
+            product not in state.order_depths):
+            return orders
+        
+        b1_depth = state.order_depths["PICNIC_BASKET1"]
+        b2_depth = state.order_depths["PICNIC_BASKET2"]
+        dj_depth = state.order_depths[product]
+        
+        # Check for necessary bid/ask data
+        if (not b1_depth.buy_orders or not b1_depth.sell_orders or
+            not b2_depth.buy_orders or not b2_depth.sell_orders or
+            not dj_depth.buy_orders or not dj_depth.sell_orders):
+            return orders
+        
+        # Compute mid prices for both baskets
+        b1_mid = (max(b1_depth.buy_orders.keys()) + min(b1_depth.sell_orders.keys())) / 2
+        b2_mid = (max(b2_depth.buy_orders.keys()) + min(b2_depth.sell_orders.keys())) / 2
+        
+        # Calculate normalized difference between Basket1 and Basket2
+        normalized_diff = (b1_mid - b2_mid) / b2_mid
+        
+        # Maintain a rolling window of the normalized differences
+        self.djembes_basket_history.append(normalized_diff)
+        window = 1000
+        if len(self.djembes_basket_history) > window:
+            self.djembes_basket_history.pop(0)
+        
+        # Compute the mean and standard deviation of the normalized difference history
+        mean_diff = np.mean(self.djembes_basket_history)
+        std_diff = np.std(self.djembes_basket_history) + 1e-9  # avoid division by zero
+        z_score = (normalized_diff - mean_diff) / std_diff
+        
+        # Access DJEMBES best bid and ask
+        dj_best_bid = max(dj_depth.buy_orders.keys())
+        dj_best_ask = min(dj_depth.sell_orders.keys())
+        
+        # Define base order size and threshold for trading signals
+        order_size = int (1 * z_score)
+        threshold = 0.0
+        
+        # Trading logic based on the z-score from the basket difference:
+        # If z_score > threshold, Basket1 is relatively expensive, suggesting DJEMBES (present only in Basket1) may be overvalued -> sell DJEMBES
+        # If z_score < -threshold, Basket1 is relatively cheap, suggesting DJEMBES may be undervalued -> buy DJEMBES
+        if z_score > threshold and len(self.djembes_basket_history) > 20:
+            if position > -position_limit:
+                sell_qty = min(order_size, position_limit + position)
+                # Sell slightly below the best ask
+                orders.append(Order(product, dj_best_ask, -sell_qty))
+        elif z_score < -threshold  and len(self.djembes_basket_history) > 20:
+            if position < position_limit:
+                buy_qty = min(order_size, position_limit - position)
+                # Buy slightly above the best bid
+                orders.append(Order(product, dj_best_bid, buy_qty))
         
         return orders
 
@@ -833,6 +901,8 @@ class Trader:
         
         # if "DJEMBES" in state.order_depths: 
         #     result["DJEMBES"] = self.djembes_strategy(state.order_depths["DJEMBES"], state)
+        if ("DJEMBES" in state.order_depths and "PICNIC_BASKET1" in state.order_depths and "PICNIC_BASKET2" in state.order_depths):
+            result["DJEMBES"] = self.djembes_basket_comparison_strategy(state)
         
         if "PICNIC_BASKET1" in state.order_depths:
             result["PICNIC_BASKET1"] = self.picnic_basket_1_strategy(state.order_depths["PICNIC_BASKET1"], state)

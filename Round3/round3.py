@@ -607,21 +607,17 @@ class Trader:
 
     def volcanic_voucher_strategy(self, state: TradingState) -> List[Order]:
         orders = []
-        spot_product = "VOLCANIC_ROCK"
 
+        spot_product = "VOLCANIC_ROCK"
         if spot_product not in state.order_depths:
             return orders
 
         best_bid = max(state.order_depths[spot_product].buy_orders.keys(), default=None)
         best_ask = min(state.order_depths[spot_product].sell_orders.keys(), default=None)
-
         if best_bid is None or best_ask is None:
             return orders
 
         spot_price = (best_bid + best_ask) / 2
-        T = 5 / 365
-        r = 0.00
-        sigma = 0.20
 
         vouchers = {
             "VOLCANIC_ROCK_VOUCHER_9500": 9500,
@@ -631,49 +627,59 @@ class Trader:
             "VOLCANIC_ROCK_VOUCHER_10500": 10500,
         }
 
-        positions = {v: state.position.get(v, 0) for v in vouchers}
+        u = 0.03  # 3% up move in spot
+        time_value = 100
+        edge_threshold = 50
+        max_order_size = 5
+        max_voucher = 200
 
-        data = []
         for voucher, strike in vouchers.items():
             if voucher not in state.order_depths:
                 continue
+
             depth = state.order_depths[voucher]
             v_bid = max(depth.buy_orders.keys(), default=None)
             v_ask = min(depth.sell_orders.keys(), default=None)
             if v_bid is None or v_ask is None:
                 continue
+
             market_price = (v_bid + v_ask) / 2
-            theo_price = self.binomial_tree_call(spot_price, strike, T, r, sigma)
-            greeks = self.binomial_tree_greeks(spot_price, strike, T, r, sigma)
-            data.append({
-                "voucher": voucher,
-                "strike": strike,
-                "theo_price": theo_price,
-                "market_price": market_price,
-                "edge": theo_price - market_price,
-                "greeks": greeks,
-                "bid": v_bid,
-                "ask": v_ask,
-                "depth": depth
-            })
+            position = state.position.get(voucher, 0)
 
-        data.sort(key=lambda x: x["edge"], reverse=True)
+            # Fair price from binomial estimate
+            S_up = spot_price * (1 + u)
+            theo = max(0, 0.5 * (S_up - strike)) + time_value
+            edge = theo - market_price
 
-        for item in data:
-            voucher = item["voucher"]
-            edge = item["edge"]
-            bid = item["bid"]
-            ask = item["ask"]
-            depth = item["depth"]
+            # Buy undervalued
+            if edge > edge_threshold and position < max_voucher:
+                available_qty = depth.sell_orders[v_ask]
+                qty = min(available_qty, max_order_size, max_voucher - position)
+                if qty > 0 and position + qty < max_voucher:
+                    orders.append(Order(voucher, v_ask, qty))
+                    position += qty
 
-            if edge > 0:
-                qty = min(min(depth.sell_orders[ask], 1), 200 - positions[voucher]) if ask in depth.sell_orders else 0
-                if qty > 0:
-                    orders.append(Order(voucher, ask, qty))
-            elif edge < 0:
-                qty = min(depth.buy_orders[bid], 1) if bid in depth.buy_orders else 0
-                if qty > 0:
-                    orders.append(Order(voucher, bid, -min(qty, 200 + positions[voucher])))
+            # Sell overvalued
+            elif edge < -edge_threshold and position > -max_voucher:
+                available_qty = depth.buy_orders[v_bid]
+                qty = min(available_qty, max_order_size, position + max_voucher)
+                if qty > 0 and position - qty > -max_voucher:
+                    orders.append(Order(voucher, v_bid, -qty))
+                    position -= qty
+
+            # Passive orders (only place if still within bounds)
+            else:
+                # Passive buy
+                if position + max_order_size < max_voucher:
+                    buy_price = int(theo - 100)
+                    orders.append(Order(voucher, buy_price, max_order_size))
+                    position += max_order_size
+
+                # Passive sell
+                if position - max_order_size > -max_voucher:
+                    sell_price = int(theo + 100)
+                    orders.append(Order(voucher, sell_price, -max_order_size))
+                    position -= max_order_size
 
         return orders
 

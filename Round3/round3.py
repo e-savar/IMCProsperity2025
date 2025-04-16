@@ -703,7 +703,6 @@ class Trader:
 
         u = 0.03  # 3% up move in spot
         time_value = 100
-        edge_threshold = 50
         max_order_size = 5
         max_voucher = 200
 
@@ -723,7 +722,7 @@ class Trader:
         S_up = spot_price * (1 + u)
         theo = max(0, 0.5 * (S_up - strike)) + time_value
         edge = theo - market_price
-
+        edge_threshold = market_price * 0.015  # 1.5% of market price
         # Buy undervalued
         if edge > edge_threshold and position < max_voucher:
             available_qty = depth.sell_orders[v_ask]
@@ -759,7 +758,6 @@ class Trader:
     def sigmoid(self, x):
         x = max(min(x, 100), -100)  # Clamp x to [-100, 100]
         return 1 / (1 + math.exp(-x))
-
 
     def premium_voucher_strategy(self, voucher: str, strike: int, state: TradingState) -> List[Order]:
         orders = []
@@ -835,6 +833,7 @@ class Trader:
         self.time_to_expiry = max(0.0, self.time_to_expiry - 0.01)
 
         return orders
+    
     def volcanic_sniper(self, state: TradingState) -> List[Order]:
         orders = []
         spot_product = "VOLCANIC_ROCK"
@@ -905,36 +904,35 @@ class Trader:
             self.last_prices = trader_data.get("last_prices", self.last_prices)
             self.recent_spot_prices = trader_data.get("recent_spot_prices", self.recent_spot_prices)
 
-        if "RAINFOREST_RESIN" in state.order_depths:
-            result["RAINFOREST_RESIN"] = self.resin_strategy(state.order_depths["RAINFOREST_RESIN"], 2, state)
+        # if "RAINFOREST_RESIN" in state.order_depths:
+        #     result["RAINFOREST_RESIN"] = self.resin_strategy(state.order_depths["RAINFOREST_RESIN"], 2, state)
         
-        if "KELP" in state.order_depths:
-            result["KELP"] = self.commodity_strategy("KELP", state.order_depths["KELP"], state)
+        # if "KELP" in state.order_depths:
+        #     result["KELP"] = self.commodity_strategy("KELP", state.order_depths["KELP"], state)
                 
-        if "SQUID_INK" in state.order_depths:
-            result["SQUID_INK"] = self.commodity_strategy("SQUID_INK", state.order_depths["SQUID_INK"], state)
+        # if "SQUID_INK" in state.order_depths:
+        #     result["SQUID_INK"] = self.commodity_strategy("SQUID_INK", state.order_depths["SQUID_INK"], state)
 
-        # OPTIMIZE parameters        
-        if "JAMS" in state.order_depths:
-            result["JAMS"] = self.commodity_strategy("JAMS", state.order_depths["JAMS"], state)
+        # # OPTIMIZE parameters        
+        # if "JAMS" in state.order_depths:
+        #     result["JAMS"] = self.commodity_strategy("JAMS", state.order_depths["JAMS"], state)
         
-        if "CROISSANTS" in state.order_depths:
-            result["CROISSANTS"] = self.commodity_strategy("CROISSANTS", state.order_depths["CROISSANTS"], state)
+        # if "CROISSANTS" in state.order_depths:
+        #     result["CROISSANTS"] = self.commodity_strategy("CROISSANTS", state.order_depths["CROISSANTS"], state)
         
-        # if "DJEMBES" in state.order_depths: 
-        #     result["DJEMBES"] = self.djembes_strategy(state.order_depths["DJEMBES"], state)
-        if ("DJEMBES" in state.order_depths and "PICNIC_BASKET1" in state.order_depths and "PICNIC_BASKET2" in state.order_depths):
-            result["DJEMBES"] = self.djembes_basket_comparison_strategy(state)
+        # # if "DJEMBES" in state.order_depths: 
+        # #     result["DJEMBES"] = self.djembes_strategy(state.order_depths["DJEMBES"], state)
+        # if ("DJEMBES" in state.order_depths and "PICNIC_BASKET1" in state.order_depths and "PICNIC_BASKET2" in state.order_depths):
+        #     result["DJEMBES"] = self.djembes_basket_comparison_strategy(state)
         
-        if "PICNIC_BASKET1" in state.order_depths:
-            result["PICNIC_BASKET1"] = self.picnic_basket_1_strategy(state.order_depths["PICNIC_BASKET1"], state)
+        # if "PICNIC_BASKET1" in state.order_depths:
+        #     result["PICNIC_BASKET1"] = self.picnic_basket_1_strategy(state.order_depths["PICNIC_BASKET1"], state)
         
-        if "PICNIC_BASKET2" in state.order_depths:
-            result["PICNIC_BASKET2"] = self.picnic_basket_2_strategy(state.order_depths["PICNIC_BASKET2"], state)
+        # if "PICNIC_BASKET2" in state.order_depths:
+        #     result["PICNIC_BASKET2"] = self.picnic_basket_2_strategy(state.order_depths["PICNIC_BASKET2"], state)
         
         if "VOLCANIC_ROCK" in state.order_depths:
             result["VOLCANIC_ROCK"] = self.commodity_strategy("VOLCANIC_ROCK", state.order_depths["VOLCANIC_ROCK"], state)
-        
         if "VOLCANIC_ROCK_VOUCHER_9500" in state.order_depths:
             result["VOLCANIC_ROCK_VOUCHER_9500"] = self.volcanic_voucher_strategy("VOLCANIC_ROCK_VOUCHER_9500", 9500, state)
         if "VOLCANIC_ROCK_VOUCHER_9750" in state.order_depths:

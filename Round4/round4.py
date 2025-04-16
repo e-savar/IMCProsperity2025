@@ -125,13 +125,28 @@ logger = Logger()
 class Trader:
     def __init__(self):
 
-        # RAINFOREST_RESIN parameters
+    # RAINFOREST_RESIN parameters
         self.resin_fair_value = 10000
 
         # DJEMBES parameters
+        self.djembe_position_limit = 60
         self.djembe_theoretical_prices = []
         self.djembe_actual_prices = []
+        self.djembe_window = 20  # Lookback window size
+        self.djembe_spread_history = []
         self.djembes_basket_history = []
+
+        # PICNIC_BASKET_1 parameters
+        # contain 6 croissants, 3 jams, 1 DJEMBES
+        self.picnic_basket_1_limit = 60
+
+        # PICNIC_BASKET_2 parameters
+        # contain 4 croissants, 2 jams
+        self.picnic_basket_2_limit = 100
+
+        # Conversion tracking
+        self.prev_timestamp = None
+        self.timeframe_data = {}
 
         # commodity parameters
         self.position_limits = {
@@ -145,6 +160,7 @@ class Trader:
             "VOLCANIC_ROCK_VOUCHER_10250": 200,
             "VOLCANIC_ROCK_VOUCHER_10500": 200,
             "VOLCANIC_ROCK_VOUCHER_10000": 200,
+            "MAGNIFICENT_MACARONS": 75,  
         }
         self.base_spreads = {
             "KELP": 1.3,
@@ -157,6 +173,7 @@ class Trader:
             "VOLCANIC_ROCK_VOUCHER_10250": 1.2,
             "VOLCANIC_ROCK_VOUCHER_10500": 1.2,
             "VOLCANIC_ROCK_VOUCHER_10000": 1.2,
+            "MAGNIFICENT_MACARONS": 1.2, 
         }
         self.inventory_factor = {
             "KELP": -0.2,
@@ -169,6 +186,7 @@ class Trader:
             "VOLCANIC_ROCK_VOUCHER_10250": -0.5,
             "VOLCANIC_ROCK_VOUCHER_10500": -0.5,
             "VOLCANIC_ROCK_VOUCHER_10000": -0.5,
+            "MAGNIFICENT_MACARONS": -0.3, 
         }
         self.momentum_factor = {
             "KELP": 0.1,
@@ -181,6 +199,7 @@ class Trader:
             "VOLCANIC_ROCK_VOUCHER_10250": 0.2,
             "VOLCANIC_ROCK_VOUCHER_10500": 0.2,
             "VOLCANIC_ROCK_VOUCHER_10000": 0.2,
+            "MAGNIFICENT_MACARONS": 0.2,
         }
         self.ewma_mean = {
             "KELP": None,
@@ -193,6 +212,7 @@ class Trader:
             "VOLCANIC_ROCK_VOUCHER_10250": None,
             "VOLCANIC_ROCK_VOUCHER_10500": None,
             "VOLCANIC_ROCK_VOUCHER_10000": None,
+            "MAGNIFICENT_MACARONS": None,
         }
         self.ewma_var = {
             "KELP": None,
@@ -205,6 +225,7 @@ class Trader:
             "VOLCANIC_ROCK_VOUCHER_10250": None,
             "VOLCANIC_ROCK_VOUCHER_10500": None,
             "VOLCANIC_ROCK_VOUCHER_10000": None,
+            "MAGNIFICENT_MACARONS": None,
         }
         self.price_history = {
             "KELP": [],
@@ -217,7 +238,7 @@ class Trader:
             "VOLCANIC_ROCK_VOUCHER_10250": [],
             "VOLCANIC_ROCK_VOUCHER_10500": [],
             "VOLCANIC_ROCK_VOUCHER_10000": [],
-
+            "MAGNIFICENT_MACARONS": [],
         }
         self.last_prices = {
             "KELP": [],
@@ -230,7 +251,13 @@ class Trader:
             "VOLCANIC_ROCK_VOUCHER_10250": [],
             "VOLCANIC_ROCK_VOUCHER_10500": [],
             "VOLCANIC_ROCK_VOUCHER_10000": [],
+            "MAGNIFICENT_MACARONS": [],
         }
+        self.volatility_spread_multiplier = 1.7
+        self.lookback_window = 100
+        self.ewma_alpha = 0.2
+        self.rolling_window = 20
+        self.momentum_window = 5
         self.recent_spot_prices = {
             "VOLCANIC_ROCK": [0] * 3,
             "VOLCANIC_ROCK_VOUCHER_9500": [0] * 3,
@@ -238,7 +265,11 @@ class Trader:
             "VOLCANIC_ROCK_VOUCHER_10000": [0] * 3,
             "VOLCANIC_ROCK_VOUCHER_10250": [0] * 3,
             "VOLCANIC_ROCK_VOUCHER_10500": [0] * 3,
+            "MAGNIFICENT_MACARONS": [0] * 3,
         }
+        self.prev_spot = None
+        self.max_pos = 200
+        self.order_size = 5
         self.vouchers = {
             "VOLCANIC_ROCK_VOUCHER_9750": 9750,
             "VOLCANIC_ROCK_VOUCHER_9500": 9500,
@@ -751,6 +782,73 @@ class Trader:
                     position -= qty
 
         return orders
+    
+    def macaron_strategy(self, state: TradingState) -> List[Order]:
+        product = "MAGNIFICENT_MACARONS"
+        orders: List[Order] = []
+
+        if product not in state.order_depths:
+            return orders
+
+        order_depth = state.order_depths[product]
+        position = state.position.get(product, 0)
+        limit = self.position_limits[product]
+
+        if not order_depth.buy_orders or not order_depth.sell_orders:
+            return orders
+
+        best_bid = max(order_depth.buy_orders)
+        best_ask = min(order_depth.sell_orders)
+        mid_price = (best_bid + best_ask) / 2
+
+        # EWMA mean + var update
+        self.price_history[product].append(mid_price)
+        if len(self.price_history[product]) > self.lookback_window:
+            self.price_history[product].pop(0)
+
+        ewma_mean, ewma_var = self.update_ewma(
+            mid_price,
+            self.ewma_mean[product],
+            self.ewma_var[product],
+            self.ewma_alpha
+        )
+        self.ewma_mean[product] = ewma_mean
+        self.ewma_var[product] = ewma_var
+
+        fair_value = ewma_mean if ewma_mean else mid_price
+        std_dev = max(1, math.sqrt(ewma_var))
+
+        # Dynamic position sizing based on market conditions
+        adjusted_fair_value = fair_value
+        inventory_skew = self.inventory_factor[product] * (position / limit)
+        
+        # Momentum skew based on longer-term trend (considering smoothed price)
+        self.last_prices[product].append(mid_price)
+        if len(self.last_prices[product]) > self.momentum_window:
+            self.last_prices[product].pop(0)
+
+        momentum_skew = 0
+        if len(self.last_prices[product]) >= 2:
+            momentum = self.last_prices[product][-1] - self.last_prices[product][0]
+            momentum_skew = self.momentum_factor[product] * (momentum / std_dev)
+
+        total_skew = inventory_skew + momentum_skew
+
+        # Adjust spread based on volatility and threshold criteria
+        spread = self.base_spreads[product] + std_dev * self.volatility_spread_multiplier
+        quote_bid = int(adjusted_fair_value - spread / 2 + total_skew)
+        quote_ask = int(adjusted_fair_value + spread / 2 + total_skew)
+
+        # Avoid aggressive position changes
+        max_bid_volume = min(10, limit - position) if quote_bid < mid_price else 0
+        max_ask_volume = min(10, limit + position) if quote_ask > mid_price else 0
+
+        if max_bid_volume > 0:
+            orders.append(Order(product, quote_bid, max_bid_volume))
+        if max_ask_volume > 0:
+            orders.append(Order(product, quote_ask, -max_ask_volume))
+
+        return orders
 
     def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
         result = {}
@@ -809,6 +907,10 @@ class Trader:
             result["VOLCANIC_ROCK_VOUCHER_10250"] = self.premium_voucher_strategy("VOLCANIC_ROCK_VOUCHER_10250", 10250, state) # best out of 4 strats for it
         if "VOLCANIC_ROCK_VOUCHER_10500" in state.order_depths:
             result["VOLCANIC_ROCK_VOUCHER_10500"] = self.volcanic_sniper(state) # best out of the 4 strats for it
+
+        # CAN BE WAY BETTER
+        if "MAGNIFICENT_MACARONS" in state.order_depths:
+            result["MAGNIFICENT_MACARONS"] = self.macaron_strategy(state)
 
         trader_data = {
             "djembe_theoretical_prices": self.djembe_theoretical_prices,

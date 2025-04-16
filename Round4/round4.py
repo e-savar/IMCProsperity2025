@@ -5,7 +5,7 @@ import jsonpickle
 import numpy as np
 import math
 import json
-
+# round 4
 # Needed for visualizer and backtester provided by Jmerle
 class Logger:
     def __init__(self) -> None:

@@ -156,6 +156,8 @@ class Trader:
             'CROISSANTS': 250,
             "VOLCANIC_ROCK": 400,
             "VOLCANIC_ROCK_VOUCHER_10250": 200,
+            "VOLCANIC_ROCK_VOUCHER_10500": 200,
+            "VOLCANIC_ROCK_VOUCHER_10000": 200,
         }
         self.base_spreads = {
             "KELP": 1.3,
@@ -164,6 +166,8 @@ class Trader:
             'CROISSANTS': 1.5,
             "VOLCANIC_ROCK": 1.2,
             "VOLCANIC_ROCK_VOUCHER_10250": 1.2,
+            "VOLCANIC_ROCK_VOUCHER_10500": 1.2,
+            "VOLCANIC_ROCK_VOUCHER_10000": 1.2,
         }
         self.inventory_factor = {
             "KELP": -0.2,
@@ -172,6 +176,8 @@ class Trader:
             'CROISSANTS': -0.4,
             "VOLCANIC_ROCK": -0.7,
             "VOLCANIC_ROCK_VOUCHER_10250": -0.5,
+            "VOLCANIC_ROCK_VOUCHER_10500": -0.5,
+            "VOLCANIC_ROCK_VOUCHER_10000": -0.5,
         }
         self.momentum_factor = {
             "KELP": 0.1,
@@ -180,6 +186,8 @@ class Trader:
             'CROISSANTS': 0.25,
             "VOLCANIC_ROCK": 0.1,
             "VOLCANIC_ROCK_VOUCHER_10250": 0.2,
+            "VOLCANIC_ROCK_VOUCHER_10500": 0.2,
+            "VOLCANIC_ROCK_VOUCHER_10000": 0.2,
         }
         self.ewma_mean = {
             "KELP": None,
@@ -188,6 +196,8 @@ class Trader:
             "CROISSANTS": None,
             "VOLCANIC_ROCK": None,
             "VOLCANIC_ROCK_VOUCHER_10250": None,
+            "VOLCANIC_ROCK_VOUCHER_10500": None,
+            "VOLCANIC_ROCK_VOUCHER_10000": None,
         }
         self.ewma_var = {
             "KELP": None,
@@ -196,6 +206,8 @@ class Trader:
             "CROISSANTS": None,
             "VOLCANIC_ROCK": None,
             "VOLCANIC_ROCK_VOUCHER_10250": None,
+            "VOLCANIC_ROCK_VOUCHER_10500": None,
+            "VOLCANIC_ROCK_VOUCHER_10000": None,
         }
         self.price_history = {
             "KELP": [],
@@ -204,6 +216,8 @@ class Trader:
             "CROISSANTS": [],
             "VOLCANIC_ROCK": [],
             "VOLCANIC_ROCK_VOUCHER_10250": [],
+            "VOLCANIC_ROCK_VOUCHER_10500": [],
+            "VOLCANIC_ROCK_VOUCHER_10000": [],
         }
         self.last_prices = {
             "KELP": [],
@@ -212,6 +226,8 @@ class Trader:
             "CROISSANTS": [],
             "VOLCANIC_ROCK": [],
             "VOLCANIC_ROCK_VOUCHER_10250": [],
+            "VOLCANIC_ROCK_VOUCHER_10500": [],
+            "VOLCANIC_ROCK_VOUCHER_10000": [],
         }
         self.volatility_spread_multiplier = 1.7
         self.lookback_window = 100
@@ -220,12 +236,19 @@ class Trader:
         self.momentum_window = 5
         self.recent_spot_prices = {
             "VOLCANIC_ROCK": [0] * 3,
+            "VOLCANIC_ROCK_VOUCHER_9500": [0] * 3,
+            "VOLCANIC_ROCK_VOUCHER_9750": [0] * 3,
             "VOLCANIC_ROCK_VOUCHER_10000": [0] * 3,
+            "VOLCANIC_ROCK_VOUCHER_10250": [0] * 3,
+            "VOLCANIC_ROCK_VOUCHER_10500": [0] * 3,
         }
         self.prev_spot = None
         self.max_pos = 200
         self.order_size = 5
         self.vouchers = {
+            "VOLCANIC_ROCK_VOUCHER_9750": 9750,
+            "VOLCANIC_ROCK_VOUCHER_9500": 9500,
+            "VOLCANIC_ROCK_VOUCHER_10000": 10000,
             "VOLCANIC_ROCK_VOUCHER_10250": 10250,
             "VOLCANIC_ROCK_VOUCHER_10500": 10500,
         }
@@ -938,11 +961,11 @@ class Trader:
         if "VOLCANIC_ROCK_VOUCHER_9750" in state.order_depths:
             result["VOLCANIC_ROCK_VOUCHER_9750"] = self.volcanic_voucher_strategy("VOLCANIC_ROCK_VOUCHER_9750", 9750, state)
         if "VOLCANIC_ROCK_VOUCHER_10000" in state.order_depths:
-            result["VOLCANIC_ROCK_VOUCHER_10000"] = self.premium_voucher_strategy("VOLCANIC_ROCK_VOUCHER_10000", 10000, state)
+            result["VOLCANIC_ROCK_VOUCHER_10000"] = self.commodity_strategy("VOLCANIC_ROCK_VOUCHER_10000", state.order_depths["VOLCANIC_ROCK_VOUCHER_10000"], state)
         if "VOLCANIC_ROCK_VOUCHER_10250" in state.order_depths:
-            result["VOLCANIC_ROCK_VOUCHER_10250"] = self.commodity_strategy("VOLCANIC_ROCK_VOUCHER_10250", state.order_depths["VOLCANIC_ROCK_VOUCHER_10250"], state)
+            result["VOLCANIC_ROCK_VOUCHER_10250"] = self.premium_voucher_strategy("VOLCANIC_ROCK_VOUCHER_10250", 10250, state) # best out of 4 strats for it
         if "VOLCANIC_ROCK_VOUCHER_10500" in state.order_depths:
-            result["VOLCANIC_ROCK_VOUCHER_10500"] = self.volcanic_sniper(state)
+            result["VOLCANIC_ROCK_VOUCHER_10500"] = self.volcanic_sniper(state) # best out of the 4 strats for it
 
         trader_data = {
             "timeframe_data": self.timeframe_data,

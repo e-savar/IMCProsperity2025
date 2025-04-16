@@ -212,8 +212,13 @@ class Trader:
         self.recent_spot_prices = {
             "VOLCANIC_ROCK": [0] * 3,
         }
-
-
+        self.prev_spot = None
+        self.max_pos = 200
+        self.order_size = 5
+        self.vouchers = {
+            "VOLCANIC_ROCK_VOUCHER_10250": 10250,
+            "VOLCANIC_ROCK_VOUCHER_10500": 10500,
+        }
     def clear_position_order(self, orders: List[Order], order_depth: OrderDepth, position: int,
                              position_limit: int, product: str, buy_order_volume: int,
                              sell_order_volume: int, fair_value: float, width: int) -> tuple:
@@ -732,6 +737,54 @@ class Trader:
 
         return orders
 
+    def volcanic_sniper(self, state: TradingState) -> List[Order]:
+        orders = []
+        spot_product = "VOLCANIC_ROCK"
+
+        if spot_product not in state.order_depths:
+            return orders
+
+        spot_depth = state.order_depths[spot_product]
+        best_bid = max(spot_depth.buy_orders.keys(), default=None)
+        best_ask = min(spot_depth.sell_orders.keys(), default=None)
+        if best_bid is None or best_ask is None:
+            return orders
+
+        spot_price = (best_bid + best_ask) / 2
+
+        for voucher, strike in self.vouchers.items():
+            if voucher not in state.order_depths:
+                continue
+
+            depth = state.order_depths[voucher]
+            v_bid = max(depth.buy_orders.keys(), default=None)
+            v_ask = min(depth.sell_orders.keys(), default=None)
+            if v_bid is None or v_ask is None:
+                continue
+
+            fair_price = (v_bid + v_ask) / 2
+            position = state.position.get(voucher, 0)
+
+            # Thresholds adjust dynamically based on proximity to strike
+            proximity_factor = max(0.5, min(1.5, (strike - spot_price) / 252))
+            buy_threshold = fair_price * (proximity_factor)
+            sell_threshold = fair_price * (proximity_factor)
+
+            # BUY logic
+            if v_ask < buy_threshold and position < self.max_pos:
+                qty = min(depth.sell_orders[v_ask], self.order_size, self.max_pos - position)
+                if qty > 0:
+                    orders.append(Order(voucher, v_ask, qty))
+                    position += qty
+
+            # SELL logic
+            if v_bid > sell_threshold and position > -self.max_pos:
+                qty = min(depth.buy_orders[v_bid], self.order_size, position + self.max_pos)
+                if qty > 0:
+                    orders.append(Order(voucher, v_bid, -qty))
+                    position -= qty
+
+        return orders
 
     def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
         result = {}
@@ -789,9 +842,9 @@ class Trader:
         if "VOLCANIC_ROCK_VOUCHER_10000" in state.order_depths:
             result["VOLCANIC_ROCK_VOUCHER_10000"] = self.premium_voucher_strategy("VOLCANIC_ROCK_VOUCHER_10000", 10000, state)
         if "VOLCANIC_ROCK_VOUCHER_10250" in state.order_depths:
-            result["VOLCANIC_ROCK_VOUCHER_10250"] = self.premium_voucher_strategy("VOLCANIC_ROCK_VOUCHER_10250", 10250, state)
+            result["VOLCANIC_ROCK_VOUCHER_10250"] = self.volcanic_sniper(state)
         if "VOLCANIC_ROCK_VOUCHER_10500" in state.order_depths:
-            result["VOLCANIC_ROCK_VOUCHER_10500"] = self.premium_voucher_strategy("VOLCANIC_ROCK_VOUCHER_10500", 10500, state)
+            result["VOLCANIC_ROCK_VOUCHER_10500"] = self.volcanic_sniper(state)
 
         trader_data = {
             "timeframe_data": self.timeframe_data,

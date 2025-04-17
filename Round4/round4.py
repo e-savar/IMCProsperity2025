@@ -132,6 +132,7 @@ class Trader:
         self.djembe_theoretical_prices = []
         self.djembe_actual_prices = []
         self.djembes_basket_history = []
+        self.croissants_mid_history = []
 
         # commodity parameters
         self.position_limits = {
@@ -391,64 +392,8 @@ class Trader:
         if ask_volume > 0:
             orders.append(Order(product, quote_ask, -ask_volume))
         return orders
-    def croissant_strategy(self, order_depth: OrderDepth, width: int, state: TradingState) -> List[Order]:
-        orders: List[Order] = []
-        product = "CROISSANTS"
-        fair_value = 4270  # Mean reversion center
-        position_limit = 250
-        position = state.position.get(product, 0)
-        order_depth = state.order_depths[product]
 
-        buy_order_volume = 0
-        sell_order_volume = 0
-
-        if order_depth.sell_orders:
-            best_ask = min(order_depth.sell_orders.keys())
-
-            # Buy if ask is significantly below mean
-            if best_ask < fair_value:
-                qty = 1
-                if qty > 0:
-                    orders.append(Order(product, best_ask, qty))
-                    buy_order_volume += qty
-
-        if order_depth.buy_orders:
-            best_bid = max(order_depth.buy_orders.keys())
-            # Sell if bid is significantly above mean
-            if best_bid > fair_value:
-                qty = 1
-                orders.append(Order(product, best_bid, -qty))
-                sell_order_volume += qty
-
-        # Risk management to avoid overshooting position limits
-        buy_order_volume, sell_order_volume = self.clear_position_order(
-            orders, order_depth, position, position_limit,
-            product, buy_order_volume, sell_order_volume, fair_value, 1
-        )
-
-        # Post passive orders if spread is wide enough
-        try:
-            best_ask_above_fv = min([p for p in order_depth.sell_orders if p > fair_value + 1])
-            best_bid_below_fv = max([p for p in order_depth.buy_orders if p < fair_value - 1])
-        except ValueError:
-            best_ask_above_fv = fair_value + 3
-            best_bid_below_fv = fair_value - 3
-
-        spread = best_ask_above_fv - best_bid_below_fv
-        if spread >= 2:
-            buy_qty = 1
-            if buy_qty > 0:
-                passive_buy_price = best_bid_below_fv + 1
-                orders.append(Order(product, passive_buy_price, buy_qty))
-
-            sell_qty = 1
-            if sell_qty > 0:
-                passive_sell_price = best_ask_above_fv - 1
-                orders.append(Order(product, passive_sell_price, -sell_qty))
-
-        return orders
-
-    def djembes_basket_comparison_strategy(self, state: TradingState) -> List[Order]:
+    def djembes_mean_reversion_strategy(self, state: TradingState) -> List[Order]:
         orders = []
         product = "DJEMBES"
         position = state.position.get(product, 0)
@@ -495,8 +440,7 @@ class Trader:
         dj_best_bid = max(dj_depth.buy_orders.keys())
         dj_best_ask = min(dj_depth.sell_orders.keys())
 
-        # Define base order size and threshold for trading signals
-        order_size = int(1 * z_score)
+        # Define threshold for trading signals
         threshold = 0.0
 
         # Trading logic based on the z-score from the basket difference
@@ -508,6 +452,57 @@ class Trader:
             if position < position_limit:
                 buy_qty = 4
                 orders.append(Order(product, dj_best_bid, buy_qty))
+
+        return orders
+    def croissants_mean_reversion_strategy(self, state: TradingState) -> List[Order]:
+        orders = []
+        product = "CROISSANTS"
+        position = state.position.get(product, 0)
+        position_limit = 250
+
+        # Ensure CROISSANTS order depth is available
+        if product not in state.order_depths:
+            return orders
+
+        cr_depth = state.order_depths[product]
+
+        # Check for necessary bid/ask data
+        if not cr_depth.buy_orders or not cr_depth.sell_orders:
+            return orders
+
+        # Access CROISSANTS best bid and ask
+        cr_best_bid = max(cr_depth.buy_orders.keys())
+        cr_best_ask = min(cr_depth.sell_orders.keys())
+
+        # Compute mid-price
+        cr_mid = (cr_best_bid + cr_best_ask) / 2
+
+        # Maintain a rolling window of CROISSANTS mid prices
+        self.croissants_mid_history.append(cr_mid)
+        window = 200
+        if len(self.croissants_mid_history) > window:
+            self.croissants_mid_history.pop(0)
+
+        if len(self.croissants_mid_history) < window:
+            return orders  # Not enough data yet
+
+        recent_mids = self.croissants_mid_history[-window:]
+        mean_mid = np.mean(recent_mids)
+        std_mid = np.std(recent_mids) + 1e-9  # avoid div by zero
+        z_score = (cr_mid - mean_mid) / std_mid
+
+        # Define trading threshold
+        threshold = 0.0
+
+        # Trading logic based on z-score of CROISSANTS mid-price
+        if z_score > threshold:
+            if position > -position_limit:
+                sell_qty = 4
+                orders.append(Order(product, cr_best_ask, -sell_qty))
+        elif z_score < -threshold:
+            if position < position_limit:
+                buy_qty = 4
+                orders.append(Order(product, cr_best_bid, buy_qty))
 
         return orders
 
@@ -826,6 +821,7 @@ class Trader:
             self.price_history = trader_data.get("price_history", self.price_history)
             self.last_prices = trader_data.get("last_prices", self.last_prices)
             self.recent_spot_prices = trader_data.get("recent_spot_prices", self.recent_spot_prices)
+            self.croissants_mid_history = trader_data.get("croissants_mid_history", self.croissants_mid_history)
 
         # if "RAINFOREST_RESIN" in state.order_depths:
         #     result["RAINFOREST_RESIN"] = self.resin_strategy(state.order_depths["RAINFOREST_RESIN"], 2, state)
@@ -841,10 +837,10 @@ class Trader:
         #     result["JAMS"] = self.commodity_strategy("JAMS", state.order_depths["JAMS"], state)
         
         if "CROISSANTS" in state.order_depths:
-            result["CROISSANTS"] = self.croissant_strategy("CROISSANTS", state.order_depths["CROISSANTS"], state)
+            result["CROISSANTS"] = self.croissants_mean_reversion_strategy("CROISSANTS", state.order_depths["CROISSANTS"], state)
  
         if ("DJEMBES" in state.order_depths and "PICNIC_BASKET1" in state.order_depths and "PICNIC_BASKET2" in state.order_depths):
-            result["DJEMBES"] = self.djembes_basket_comparison_strategy(state)
+            result["DJEMBES"] = self.djembes_mean_reversion_strategy(state)
         
         # if "PICNIC_BASKET1" in state.order_depths:
         #     result["PICNIC_BASKET1"] = self.picnic_basket_1_strategy(state.order_depths["PICNIC_BASKET1"], state)
@@ -873,7 +869,7 @@ class Trader:
             "price_history": self.price_history,
             "last_prices": self.last_prices,
             "recent_spot_prices": self.recent_spot_prices,
-
+            "croissants_mid_history": self.croissants_mid_history,
         }
         
         logger.flush(state, result, conversions, jsonpickle.encode(trader_data))

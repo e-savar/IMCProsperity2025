@@ -240,21 +240,17 @@ class Trader:
             "VOLCANIC_ROCK_VOUCHER_10250": [0] * 3,
             "VOLCANIC_ROCK_VOUCHER_10500": [0] * 3,
         }
-        self.vouchers = {
-            "VOLCANIC_ROCK_VOUCHER_9750": 9750,
-            "VOLCANIC_ROCK_VOUCHER_9500": 9500,
-            "VOLCANIC_ROCK_VOUCHER_10000": 10000,
-            "VOLCANIC_ROCK_VOUCHER_10250": 10250,
-            "VOLCANIC_ROCK_VOUCHER_10500": 10500,
-        }
         self.time_to_expiry = 1.0  # scale 1.0 = start, 0.0 = expiry
         self.order_sizes = {
             "KELP": 10,
             "SQUID_INK": 10,
             "VOLCANIC_ROCK": 25,
+            "VOLCANIC_ROCK_VOUCHER_9500": 20,
             "VOLCANIC_ROCK_VOUCHER_9750": 20,
             "VOLCANIC_ROCK_VOUCHER_10000": 20,
-            "JAMS": 10,
+            "VOLCANIC_ROCK_VOUCHER_10250": 20,
+            "VOLCANIC_ROCK_VOUCHER_10500": 15,
+            "JAMS": 25,
         }
     
     def clear_position_order(self, orders: List[Order], order_depth: OrderDepth, position: int,
@@ -765,7 +761,7 @@ class Trader:
 
         return orders
     
-    def volcanic_sniper(self, state: TradingState) -> List[Order]:
+    def volcanic_sniper(self, voucher: str, strike: int, state: TradingState) -> List[Order]:
         orders = []
         spot_product = "VOLCANIC_ROCK"
         max_pos = 200
@@ -781,37 +777,36 @@ class Trader:
 
         spot_price = (best_bid + best_ask) / 2
 
-        for voucher, strike in self.vouchers.items():
-            if voucher not in state.order_depths:
-                continue
+        if voucher not in state.order_depths:
+            return []
 
-            depth = state.order_depths[voucher]
-            v_bid = max(depth.buy_orders.keys(), default=None)
-            v_ask = min(depth.sell_orders.keys(), default=None)
-            if v_bid is None or v_ask is None:
-                continue
+        depth = state.order_depths[voucher]
+        v_bid = max(depth.buy_orders.keys(), default=None)
+        v_ask = min(depth.sell_orders.keys(), default=None)
+        if v_bid is None or v_ask is None:
+            return []
 
-            fair_price = (v_bid + v_ask) / 2
-            position = state.position.get(voucher, 0)
+        fair_price = (v_bid + v_ask) / 2
+        position = state.position.get(voucher, 0)
 
-            # Thresholds adjust dynamically based on proximity to strike
-            proximity_factor = max(0.5, min(1.5, (strike - spot_price) / 252))
-            buy_threshold = fair_price * (proximity_factor)
-            sell_threshold = fair_price * (proximity_factor)
+        # Thresholds adjust dynamically based on proximity to strike
+        proximity_factor = max(0.5, min(1.5, (strike - spot_price) / 252))
+        buy_threshold = fair_price * (proximity_factor)
+        sell_threshold = fair_price * (proximity_factor)
 
-            # BUY logic
-            if v_ask < buy_threshold and position < max_pos:
-                qty = min(depth.sell_orders[v_ask], order_size, max_pos - position)
-                if qty > 0:
-                    orders.append(Order(voucher, v_ask, qty))
-                    position += qty
+        # BUY logic
+        if v_ask < buy_threshold and position < max_pos:
+            qty = min(depth.sell_orders[v_ask], order_size, max_pos - position)
+            if qty > 0:
+                orders.append(Order(voucher, v_ask, qty))
+                position += qty
 
-            # SELL logic
-            if v_bid > sell_threshold and position > -max_pos:
-                qty = min(depth.buy_orders[v_bid], order_size, position + max_pos)
-                if qty > 0:
-                    orders.append(Order(voucher, v_bid, -qty))
-                    position -= qty
+        # SELL logic
+        if v_bid > sell_threshold and position > -max_pos:
+            qty = min(depth.buy_orders[v_bid], order_size, position + max_pos)
+            if qty > 0:
+                orders.append(Order(voucher, v_bid, -qty))
+                position -= qty
 
         return orders
 
@@ -864,7 +859,7 @@ class Trader:
         if "VOLCANIC_ROCK" in state.order_depths:
             result["VOLCANIC_ROCK"] = self.commodity_strategy("VOLCANIC_ROCK", state.order_depths["VOLCANIC_ROCK"], state)
         if "VOLCANIC_ROCK_VOUCHER_9500" in state.order_depths:
-            result["VOLCANIC_ROCK_VOUCHER_9500"] = self.premium_voucher_strategy("VOLCANIC_ROCK_VOUCHER_9500", 9500, state) # best out of 4 strats
+            result["VOLCANIC_ROCK_VOUCHER_9500"] = self.commodity_strategy("VOLCANIC_ROCK_VOUCHER_9500", state.order_depths["VOLCANIC_ROCK_VOUCHER_9500"], state) # best out of 4 strats
         if "VOLCANIC_ROCK_VOUCHER_9750" in state.order_depths:
             result["VOLCANIC_ROCK_VOUCHER_9750"] = self.commodity_strategy("VOLCANIC_ROCK_VOUCHER_9750", state.order_depths["VOLCANIC_ROCK_VOUCHER_9750"], state) # best out of 4 strats
         if "VOLCANIC_ROCK_VOUCHER_10000" in state.order_depths:
@@ -872,7 +867,7 @@ class Trader:
         if "VOLCANIC_ROCK_VOUCHER_10250" in state.order_depths:
             result["VOLCANIC_ROCK_VOUCHER_10250"] = self.premium_voucher_strategy("VOLCANIC_ROCK_VOUCHER_10250", 10250, state) # best out of 4 strats for it
         if "VOLCANIC_ROCK_VOUCHER_10500" in state.order_depths:
-            result["VOLCANIC_ROCK_VOUCHER_10500"] = self.volcanic_sniper(state) # best out of the 4 strats for it
+            result["VOLCANIC_ROCK_VOUCHER_10500"] = self.volcanic_sniper("VOLCANIC_ROCK_VOUCHER_10500", 10500, state) # best out of 4 strats for it
 
         trader_data = {
             "djembe_theoretical_prices": self.djembe_theoretical_prices,

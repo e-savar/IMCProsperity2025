@@ -253,6 +253,7 @@ class Trader:
             "JAMS": 25,
             "CROISSANTS": 5,
         }
+        self.squid_ink_mid_history = []
     
     def clear_position_order(self, orders: List[Order], order_depth: OrderDepth, position: int,
                              position_limit: int, product: str, buy_order_volume: int,
@@ -452,6 +453,53 @@ class Trader:
             if sell_qty > 0:
                 passive_sell_price = best_ask_above_fv - 1
                 orders.append(Order(product, passive_sell_price, -sell_qty))
+
+        return orders
+    def squid_ink_rolling_avg_strategy(self, state: TradingState) -> List[Order]:
+        orders = []
+        product = "SQUID_INK"
+        position = state.position.get(product, 0)
+        position_limit = 50
+        window = 200
+
+        # Ensure order book exists
+        if product not in state.order_depths:
+            return orders
+
+        squid_depth = state.order_depths[product]
+
+        if not squid_depth.buy_orders or not squid_depth.sell_orders:
+            return orders
+
+        # Compute mid price
+        best_bid = max(squid_depth.buy_orders.keys())
+        best_ask = min(squid_depth.sell_orders.keys())
+        mid_price = (best_bid + best_ask) / 2
+
+        # Maintain rolling history
+        self.squid_ink_mid_history.append(mid_price)
+        if len(self.squid_ink_mid_history) > window:
+            self.squid_ink_mid_history.pop(0)
+
+        # Not enough data yet
+        if len(self.squid_ink_mid_history) < window:
+            return orders
+
+        # Calculate z-score
+        mean = np.mean(self.squid_ink_mid_history)
+        std = np.std(self.squid_ink_mid_history) + 1e-9
+        z_score = (mid_price - mean) / std
+
+        # Define trading threshold
+        threshold = 1.1  # You can tune this
+
+        # Generate trading signals
+        if z_score < -threshold and position < position_limit:
+            buy_qty = 10
+            orders.append(Order(product, best_bid, buy_qty))
+        elif z_score > threshold and position > -position_limit:
+            sell_qty = 10
+            orders.append(Order(product, best_ask, -sell_qty))
 
         return orders
 
@@ -831,15 +879,16 @@ class Trader:
             self.last_prices = trader_data.get("last_prices", self.last_prices)
             self.recent_spot_prices = trader_data.get("recent_spot_prices", self.recent_spot_prices)
             self.croissants_mid_history = trader_data.get("croissants_mid_history", self.croissants_mid_history)
+            self.squid_ink_mid_history = trader_data.get("squid_ink_mid_history", self.squid_ink_mid_history)
 
         # if "RAINFOREST_RESIN" in state.order_depths:
         #     result["RAINFOREST_RESIN"] = self.resin_strategy(state.order_depths["RAINFOREST_RESIN"], 2, state)
         
-        if "KELP" in state.order_depths:
-            result["KELP"] = self.commodity_strategy("KELP", state.order_depths["KELP"], state)
+        # if "KELP" in state.order_depths:
+        #     result["KELP"] = self.commodity_strategy("KELP", state.order_depths["KELP"], state)
                 
-        # if "SQUID_INK" in state.order_depths:
-        #     result["SQUID_INK"] = self.commodity_strategy("SQUID_INK", state.order_depths["SQUID_INK"], state)
+        if "SQUID_INK" in state.order_depths:
+            result["SQUID_INK"] = self.squid_ink_rolling_avg_strategy(state)
 
         # # OPTIMIZE parameters        
         # if "JAMS" in state.order_depths:
@@ -879,6 +928,7 @@ class Trader:
             "last_prices": self.last_prices,
             "recent_spot_prices": self.recent_spot_prices,
             "croissants_mid_history": self.croissants_mid_history,
+            "squid_ink_mid_history": self.squid_ink_mid_history,
         }
         
         logger.flush(state, result, conversions, jsonpickle.encode(trader_data))

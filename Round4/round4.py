@@ -143,6 +143,7 @@ class Trader:
             "VOLCANIC_ROCK_VOUCHER_10250": 200,
             "VOLCANIC_ROCK_VOUCHER_10500": 200,
             "VOLCANIC_ROCK_VOUCHER_10000": 200,
+            "MAGNIFICENT_MACARONS": 75,
         }
         self.base_spreads = {
             "KELP": 1.3,
@@ -155,6 +156,7 @@ class Trader:
             "VOLCANIC_ROCK_VOUCHER_10250": 1.5,
             "VOLCANIC_ROCK_VOUCHER_10500": 1.2,
             "VOLCANIC_ROCK_VOUCHER_10000": 1.2,
+            "MAGNIFICENT_MACARONS": 1.2,
         }
         self.inventory_factor = {
             "CROISSANTS": -0.6,
@@ -167,6 +169,7 @@ class Trader:
             "VOLCANIC_ROCK_VOUCHER_10250": -0.5,
             "VOLCANIC_ROCK_VOUCHER_10500": -0.5,
             "VOLCANIC_ROCK_VOUCHER_10000": -0.5,
+            "MAGNIFICENT_MACARONS": -0.5,
         }
         self.momentum_factor = {
             "KELP": 0.1,
@@ -179,6 +182,7 @@ class Trader:
             "VOLCANIC_ROCK_VOUCHER_10250": 0.2,
             "VOLCANIC_ROCK_VOUCHER_10500": 0.2,
             "VOLCANIC_ROCK_VOUCHER_10000": 0.2,
+            "MAGNIFICENT_MACARONS": 0.2,
         }
         self.ewma_mean = {
             "KELP": None,
@@ -191,6 +195,7 @@ class Trader:
             "VOLCANIC_ROCK_VOUCHER_10250": None,
             "VOLCANIC_ROCK_VOUCHER_10500": None,
             "VOLCANIC_ROCK_VOUCHER_10000": None,
+            "MAGNIFICENT_MACARONS": None,
         }
         self.ewma_var = {
             "KELP": None,
@@ -203,6 +208,7 @@ class Trader:
             "VOLCANIC_ROCK_VOUCHER_10250": None,
             "VOLCANIC_ROCK_VOUCHER_10500": None,
             "VOLCANIC_ROCK_VOUCHER_10000": None,
+            "MAGNIFICENT_MACARONS": None,
         }
         self.price_history = {
             "KELP": [],
@@ -215,6 +221,7 @@ class Trader:
             "VOLCANIC_ROCK_VOUCHER_10250": [],
             "VOLCANIC_ROCK_VOUCHER_10500": [],
             "VOLCANIC_ROCK_VOUCHER_10000": [],
+            "MAGNIFICENT_MACARONS": [],
 
         }
         self.last_prices = {
@@ -228,6 +235,7 @@ class Trader:
             "VOLCANIC_ROCK_VOUCHER_10250": [],
             "VOLCANIC_ROCK_VOUCHER_10500": [],
             "VOLCANIC_ROCK_VOUCHER_10000": [],
+            "MAGNIFICENT_MACARONS": [],
         }
         self.recent_spot_prices = {
             "VOLCANIC_ROCK": [0] * 3,
@@ -249,8 +257,14 @@ class Trader:
             "VOLCANIC_ROCK_VOUCHER_10500": 15,
             "JAMS": 25,
             "CROISSANTS": 5,
+            "MAGNIFICENT_MACARONS": 5,
         }
         self.squid_ink_mid_history = []
+        self.sunlight_history = []
+        self.transport_fees_history = []
+        self.export_tariff_history = []
+        self.import_tariff_history = []
+        self.critical_sunlight_index = 9.5 # 9.5 is the critical sunlight index for the conversion
     
     def clear_position_order(self, orders: List[Order], order_depth: OrderDepth, position: int,
                              position_limit: int, product: str, buy_order_volume: int,
@@ -843,6 +857,151 @@ class Trader:
         return orders
 
 
+    
+    def calculate_price_volatility(self, product: str) -> float:
+        """
+        Calculate the price volatility for a product based on recent price history
+        """
+        if product not in self.price_history or len(self.price_history[product]) < 5:
+            return 10.0  # Default volatility
+        
+        # Calculate standard deviation of recent prices
+        recent_prices = self.price_history[product][-20:]
+        if len(recent_prices) < 2:
+            return 10.0
+        
+        mean_price = sum(recent_prices) / len(recent_prices)
+        variance = sum((price - mean_price) ** 2 for price in recent_prices) / len(recent_prices)
+        std_dev = variance ** 0.5
+        
+        return std_dev
+    def macaron_strategy(self, state: TradingState) -> List[Order]:
+        orders: List[Order] = []
+        product = "MAGNIFICENT_MACARONS"
+        depth = state.order_depths.get(product)
+        if not depth or not depth.buy_orders or not depth.sell_orders:
+            return orders
+
+        best_bid = max(depth.buy_orders)
+        best_ask = min(depth.sell_orders)
+        mid_price = (best_bid + best_ask) / 2
+        MAX_HISTORY_LEN = 100
+        self.price_history[product].append(mid_price)
+        if len(self.price_history[product]) > MAX_HISTORY_LEN:
+            self.price_history[product].pop(0)
+        position = state.position.get(product, 0)
+        position_limit = self.position_limits[product]
+
+        # --- Fair Value Estimation ---
+        ewma_alpha = 0.2
+        self.ewma_mean[product], self.ewma_var[product] = self.update_ewma(
+            mid_price, self.ewma_mean[product], self.ewma_var[product], ewma_alpha
+        )
+        fair_value = self.ewma_mean[product] or mid_price
+        std_dev = max(math.sqrt(self.ewma_var[product] or 1), 1)
+
+        # --- Momentum Signal ---
+        momentum_window = 10
+        self.last_prices[product].append(mid_price)
+        if len(self.last_prices[product]) > momentum_window:
+            self.last_prices[product].pop(0)
+        momentum = self.last_prices[product][-1] - self.last_prices[product][0]
+
+        # --- External Factors: Sunlight & Transport ---
+        sunlight = (
+            state.observations.plainValueObservations.get("sunlight")
+            or getattr(state.observations.conversionObservations.get(product, None), "sunlightIndex", None)
+        )
+        transport_fees = (
+            state.observations.plainValueObservations.get("transport_fees")
+            or getattr(state.observations.conversionObservations.get(product, None), "transportFees", None)
+        )
+
+        # Update histories
+        if sunlight is not None:
+            self.sunlight_history.append(sunlight)
+            self.sunlight_history = self.sunlight_history[-20:]
+        if transport_fees is not None:
+            self.transport_fees_history.append(transport_fees)
+            self.transport_fees_history = self.transport_fees_history[-20:]
+
+        # --- Bias Fair Value ---
+        CSI = 55
+        sunlight_bias = 0
+        if sunlight is not None:
+            sunlight_bias = 0.3 * (sunlight - CSI)
+
+        if transport_fees is not None and len(self.transport_fees_history) >= 5:
+            avg_fee = sum(self.transport_fees_history[-5:]) / 5
+            fee_bias = 0.05 * (transport_fees - avg_fee)
+        else:
+            fee_bias = 0
+
+        fair_value += sunlight_bias + fee_bias
+
+        # --- Skew Based on Inventory and Momentum ---
+        inventory_skew = -0.5 * (position / position_limit) * std_dev
+        momentum_skew = 0.5 * (momentum / std_dev)
+        total_skew = inventory_skew + momentum_skew
+
+        # --- Spread Control ---
+        base_spread = self.base_spreads[product]
+        volatility_spread_multiplier = 3.5
+        spread = base_spread + std_dev * volatility_spread_multiplier
+        bid_price = round(fair_value - spread / 2 + total_skew)
+        ask_price = round(fair_value + spread / 2 + total_skew)
+
+        # --- Order Sizes: Encourage mean reversion ---
+        max_size = self.order_sizes[product]
+        buy_size = min(max_size, position_limit - position)
+        sell_size = min(max_size, position + position_limit)
+
+        # --- Execution ---
+        if buy_size > 0:
+            orders.append(Order(product, bid_price, buy_size))
+        if sell_size > 0:
+            orders.append(Order(product, ask_price, -sell_size))
+
+        return orders
+
+
+
+    def should_convert_macarons(self, state: TradingState) -> int:
+        """
+        Determine whether to convert MAGNIFICENT_MACARONS based on position and market conditions
+        Returns the number of conversions to make (positive = buy, negative = sell)
+        """
+        product = "MAGNIFICENT_MACARONS"
+        position = state.position.get(product, 0)
+        max_conversions = 10  # Given conversion limit
+        
+        # If we're close to position limit and can convert to reduce position, do so
+        if position > 60:  # Close to max position of 75
+            return -min(max_conversions, position - 50)  # Convert some to reduce position
+        elif position < -60:  # Close to min position of -75
+            return min(max_conversions, 50 + position)  # Convert some to increase position
+        
+        # Check if there's an arbitrage opportunity with conversion
+        if product in state.order_depths:
+            depth = state.order_depths[product]
+            bids = sorted(depth.buy_orders.keys(), reverse=True)
+            asks = sorted(depth.sell_orders.keys())
+            
+            if bids and asks:
+                best_bid = bids[0]
+                best_ask = asks[0]
+                
+                # If there's a profitable spread for conversion, take advantage
+                # For high-value products, scale the arbitrage threshold with price
+                arbitrage_threshold = max(5, best_ask * 0.01)  # At least 1% price difference
+                
+                if best_bid > best_ask + arbitrage_threshold:
+                    if position < 65:  # Room to buy then convert
+                        return -min(max_conversions, 5)  # Convert to sell (negative value)
+                    
+        # Default: no conversion
+        return 0
+
     def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
         result = {}
         conversions = 0
@@ -855,12 +1014,18 @@ class Trader:
                 trader_data = {}
         
         if trader_data:
-            self.ewma_mean = trader_data.get("ewma_mean", self.ewma_mean)
-            self.ewma_var = trader_data.get("ewma_var", self.ewma_var)
-            self.price_history = trader_data.get("price_history", self.price_history)
-            self.last_prices = trader_data.get("last_prices", self.last_prices)
-            self.recent_spot_prices = trader_data.get("recent_spot_prices", self.recent_spot_prices)
-            self.squid_ink_mid_history = trader_data.get("squid_ink_mid_history", self.squid_ink_mid_history)
+            self.ewma_mean = trader_data.get("ewma_mean", getattr(self, "ewma_mean", {}))
+            self.ewma_var = trader_data.get("ewma_var", getattr(self, "ewma_var", {}))
+            self.price_history = trader_data.get("price_history", getattr(self, "price_history", {}))
+            self.last_prices = trader_data.get("last_prices", getattr(self, "last_prices", {}))
+            self.recent_spot_prices = trader_data.get("recent_spot_prices", getattr(self, "recent_spot_prices", {}))
+            self.squid_ink_mid_history = trader_data.get("squid_ink_mid_history", getattr(self, "squid_ink_mid_history", []))
+            
+            # Get additional histories for MAGNIFICENT_MACARONS factors
+            self.sunlight_history = trader_data.get("sunlight_history", getattr(self, "sunlight_history", []))
+            self.transport_fees_history = trader_data.get("transport_fees_history", getattr(self, "transport_fees_history", []))
+            self.export_tariff_history = trader_data.get("export_tariff_history", getattr(self, "export_tariff_history", []))
+            self.import_tariff_history = trader_data.get("import_tariff_history", getattr(self, "import_tariff_history", []))
 
         # if "RAINFOREST_RESIN" in state.order_depths:
         #     result["RAINFOREST_RESIN"] = self.resin_strategy(state.order_depths["RAINFOREST_RESIN"], 2, state)
@@ -870,13 +1035,13 @@ class Trader:
                 
         # if "SQUID_INK" in state.order_depths:
         #     result["SQUID_INK"] = self.squid_ink_rolling_avg_strategy(state)
-      
+    
         # if "JAMS" in state.order_depths:
         #     result["JAMS"] = self.commodity_strategy("JAMS", state.order_depths["JAMS"], state)
         
         # if "CROISSANTS" in state.order_depths:
         #     result["CROISSANTS"] = self.croissant_strategy(state.order_depths["CROISSANTS"], 2, state)
- 
+
         # if ("DJEMBES" in state.order_depths and "PICNIC_BASKET1" in state.order_depths and "PICNIC_BASKET2" in state.order_depths):
         #     result["DJEMBES"] = self.djembes_basket_comparison_strategy(state)
         
@@ -886,29 +1051,41 @@ class Trader:
         # if "PICNIC_BASKET2" in state.order_depths:
         #     result["PICNIC_BASKET2"] = self.picnic_basket_2_strategy(state.order_depths["PICNIC_BASKET2"], state)
         
-        if "VOLCANIC_ROCK" in state.order_depths:
-            result["VOLCANIC_ROCK"] = self.commodity_strategy("VOLCANIC_ROCK", state.order_depths["VOLCANIC_ROCK"], state)
-        if "VOLCANIC_ROCK_VOUCHER_9500" in state.order_depths:
-            result["VOLCANIC_ROCK_VOUCHER_9500"] = self.commodity_strategy("VOLCANIC_ROCK_VOUCHER_9500", state.order_depths["VOLCANIC_ROCK_VOUCHER_9500"], state) # best out of 4 strats
-        if "VOLCANIC_ROCK_VOUCHER_9750" in state.order_depths:
-            result["VOLCANIC_ROCK_VOUCHER_9750"] = self.commodity_strategy("VOLCANIC_ROCK_VOUCHER_9750", state.order_depths["VOLCANIC_ROCK_VOUCHER_9750"], state) # best out of 4 strats
-        if "VOLCANIC_ROCK_VOUCHER_10000" in state.order_depths:
-            result["VOLCANIC_ROCK_VOUCHER_10000"] = self.commodity_strategy("VOLCANIC_ROCK_VOUCHER_10000", state.order_depths["VOLCANIC_ROCK_VOUCHER_10000"], state) # best out of 4 strats for it
-        if "VOLCANIC_ROCK_VOUCHER_10250" in state.order_depths:
-            result["VOLCANIC_ROCK_VOUCHER_10250"] = self.premium_voucher_strategy("VOLCANIC_ROCK_VOUCHER_10250", 10250, state) # best out of 4 strats for it
-        if "VOLCANIC_ROCK_VOUCHER_10500" in state.order_depths:
-            result["VOLCANIC_ROCK_VOUCHER_10500"] = self.volcanic_sniper("VOLCANIC_ROCK_VOUCHER_10500", 10500, state) # best out of 4 strats for it
+        # if "VOLCANIC_ROCK" in state.order_depths:
+        #     result["VOLCANIC_ROCK"] = self.commodity_strategy("VOLCANIC_ROCK", state.order_depths["VOLCANIC_ROCK"], state)
+        # if "VOLCANIC_ROCK_VOUCHER_9500" in state.order_depths:
+        #     result["VOLCANIC_ROCK_VOUCHER_9500"] = self.commodity_strategy("VOLCANIC_ROCK_VOUCHER_9500", state.order_depths["VOLCANIC_ROCK_VOUCHER_9500"], state)
+        # if "VOLCANIC_ROCK_VOUCHER_9750" in state.order_depths:
+        #     result["VOLCANIC_ROCK_VOUCHER_9750"] = self.commodity_strategy("VOLCANIC_ROCK_VOUCHER_9750", state.order_depths["VOLCANIC_ROCK_VOUCHER_9750"], state)
+        # if "VOLCANIC_ROCK_VOUCHER_10000" in state.order_depths:
+        #     result["VOLCANIC_ROCK_VOUCHER_10000"] = self.commodity_strategy("VOLCANIC_ROCK_VOUCHER_10000", state.order_depths["VOLCANIC_ROCK_VOUCHER_10000"], state)
+        # if "VOLCANIC_ROCK_VOUCHER_10250" in state.order_depths:
+        #     result["VOLCANIC_ROCK_VOUCHER_10250"] = self.premium_voucher_strategy("VOLCANIC_ROCK_VOUCHER_10250", 10250, state)
+        # if "VOLCANIC_ROCK_VOUCHER_10500" in state.order_depths:
+        #     result["VOLCANIC_ROCK_VOUCHER_10500"] = self.volcanic_sniper("VOLCANIC_ROCK_VOUCHER_10500", 10500, state)
+        
+        # Add the new MAGNIFICENT_MACARONS trading strategy
+        if "MAGNIFICENT_MACARONS" in state.order_depths:
+            result["MAGNIFICENT_MACARONS"] = self.macaron_strategy(state)
+            
+            # Handle conversions for MAGNIFICENT_MACARONS
+            macarons_conversions = self.should_convert_macarons(state)
+            if macarons_conversions != 0:
+                conversions = macarons_conversions
 
         trader_data = {
-            "ewma_mean": self.ewma_mean,
-            "ewma_var": self.ewma_var,
-            "price_history": self.price_history,
-            "last_prices": self.last_prices,
-            "recent_spot_prices": self.recent_spot_prices,
-            "squid_ink_mid_history": self.squid_ink_mid_history,
+            "ewma_mean": getattr(self, "ewma_mean", {}),
+            "ewma_var": getattr(self, "ewma_var", {}),
+            "price_history": getattr(self, "price_history", {}),
+            "last_prices": getattr(self, "last_prices", {}),
+            "recent_spot_prices": getattr(self, "recent_spot_prices", {}),
+            "squid_ink_mid_history": getattr(self, "squid_ink_mid_history", []),
+            # Save all factor histories
+            "sunlight_history": getattr(self, "sunlight_history", []),
+            "transport_fees_history": getattr(self, "transport_fees_history", []),
+            "export_tariff_history": getattr(self, "export_tariff_history", []),
+            "import_tariff_history": getattr(self, "import_tariff_history", []),
         }
-        
         logger.flush(state, result, conversions, jsonpickle.encode(trader_data))
         # Return encoded trader data for state persistence
         return result, conversions, jsonpickle.encode(trader_data)
-    

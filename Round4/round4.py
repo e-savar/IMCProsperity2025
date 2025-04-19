@@ -1029,7 +1029,7 @@ class Trader:
 
         if "RAINFOREST_RESIN" in state.order_depths:
             result["RAINFOREST_RESIN"] = self.resin_strategy(state.order_depths["RAINFOREST_RESIN"], 2, state)
-        
+    
         if "KELP" in state.order_depths:
             result["KELP"] = self.commodity_strategy("KELP", state.order_depths["KELP"], state)
                 

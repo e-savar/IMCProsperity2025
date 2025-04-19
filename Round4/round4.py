@@ -264,6 +264,11 @@ class Trader:
         self.transport_fees_history = []
         self.export_tariff_history = []
         self.import_tariff_history = []
+        self.macaron_csi_ready = False
+        # Previous sunlight MA to detect cross events
+        self.prev_sunlight_ma = None
+        # Ticks remaining to prioritize CSI logic after a cross
+        self.macaron_csi_mode_remaining = 0
         self.critical_sunlight_index = 9.5 # 9.5 is the critical sunlight index for the conversion
     
     def clear_position_order(self, orders: List[Order], order_depth: OrderDepth, position: int,
@@ -926,7 +931,8 @@ class Trader:
             self.transport_fees_history = self.transport_fees_history[-20:]
 
         # --- Bias Fair Value ---
-        CSI = 55
+        CSI = 50
+        sunlight_ma = np.mean(self.sunlight_history) if self.sunlight_history else sunlight
         sunlight_bias = 0
         if sunlight is not None:
             sunlight_bias = 0.3 * (sunlight - CSI)
@@ -936,6 +942,14 @@ class Trader:
             fee_bias = 0.05 * (transport_fees - avg_fee)
         else:
             fee_bias = 0
+
+        # --- CSI KICKER ---
+        if sunlight_ma <= CSI:
+            qty = min(10, position_limit - position)
+            orders.append(Order(product, best_bid, qty))
+        elif sunlight_ma > CSI:
+            qty = min(10, position + position_limit)
+            orders.append(Order(product, best_ask, -qty))
 
         fair_value += sunlight_bias + fee_bias
 
@@ -963,8 +977,6 @@ class Trader:
             orders.append(Order(product, ask_price, -sell_size))
 
         return orders
-
-
 
     def should_convert_macarons(self, state: TradingState) -> int:
         """

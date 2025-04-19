@@ -855,6 +855,190 @@ class Trader:
                 position -= sell_qty
 
         return orders
+    
+    def macaron_strategy(self, state: TradingState) -> List[Order]:
+        orders: List[Order] = []
+        product = "MAGNIFICENT_MACARONS"
+        depth = state.order_depths.get(product)
+        if not depth or not depth.buy_orders or not depth.sell_orders:
+            return orders
+
+        best_bid = max(depth.buy_orders)
+        best_ask = min(depth.sell_orders)
+        mid_price = (best_bid + best_ask) / 2
+        MAX_HISTORY_LEN = 100
+        self.price_history[product].append(mid_price)
+        if len(self.price_history[product]) > MAX_HISTORY_LEN:
+            self.price_history[product].pop(0)
+        position = state.position.get(product, 0)
+        position_limit = self.position_limits[product]
+
+        ewma_alpha = 0.2
+        self.ewma_mean[product], self.ewma_var[product] = self.update_ewma(
+            mid_price, self.ewma_mean[product], self.ewma_var[product], ewma_alpha
+        )
+        fair_value = self.ewma_mean[product] or mid_price
+        std_dev = max(math.sqrt(self.ewma_var[product] or 1), 1)
+
+        momentum_window = 10
+        self.last_prices[product].append(mid_price)
+        if len(self.last_prices[product]) > momentum_window:
+            self.last_prices[product].pop(0)
+        momentum = self.last_prices[product][-1] - self.last_prices[product][0] if len(self.last_prices[product]) > 1 else 0
+
+        sunlight = (
+            state.observations.plainValueObservations.get("sunlight")
+            or getattr(state.observations.conversionObservations.get(product, None), "sunlightIndex", None)
+        )
+        transport_fees = (
+            state.observations.plainValueObservations.get("transport_fees")
+            or getattr(state.observations.conversionObservations.get(product, None), "transportFees", None)
+        )
+
+        if sunlight is not None:
+            self.sunlight_history.append(sunlight)
+            self.sunlight_history = self.sunlight_history[-20:]
+        if transport_fees is not None:
+            self.transport_fees_history.append(transport_fees)
+            self.transport_fees_history = self.transport_fees_history[-20:]
+
+        CSI = 7.5  # Updated based on better estimate
+        sunlight_trend = 0
+        if len(self.sunlight_history) >= 5:
+            sunlight_trend = self.sunlight_history[-1] - self.sunlight_history[-5]
+
+        sunlight_bias = 0
+        sunlight_multiplier = 1.0
+        if sunlight is not None:
+            sunlight_bias = 0.5 * (CSI - sunlight)
+            if sunlight < CSI:
+                below_factor = 1 + 0.3 * (CSI - sunlight) ** 2  # Stronger exponential
+                if sunlight_trend < 0:
+                    below_factor *= (1 + min(-sunlight_trend * 0.4, 0.8))  # Amplify more
+                sunlight_multiplier = below_factor
+                sunlight_bias *= 2.5  # Stronger base bias
+            else:
+                sunlight_bias *= 0.4
+
+        fee_bias = 0
+        if transport_fees is not None and len(self.transport_fees_history) >= 5:
+            avg_fee = sum(self.transport_fees_history[-5:]) / 5
+            fee_bias = 0.1 * (transport_fees - avg_fee)
+
+        adjusted_fair_value = fair_value + sunlight_bias + fee_bias
+
+        risk_multiplier = 1.0
+        if sunlight is not None:
+            if sunlight < CSI:
+                risk_multiplier = min(1.8, 1 + 0.25 * (CSI - sunlight))
+            else:
+                risk_multiplier = max(0.6, 1 - 0.07 * (sunlight - CSI))
+
+        inventory_skew = -0.8 * (position / position_limit) * std_dev
+        momentum_skew = 0.6 * (momentum / std_dev) * sunlight_multiplier
+        total_skew = inventory_skew + momentum_skew
+
+        base_spread = self.base_spreads[product]
+        volatility_factor = 3
+        if sunlight is not None and sunlight < CSI:
+            volatility_factor *= min(1.8, 1 + 0.15 * (CSI - sunlight))
+
+        spread = base_spread + std_dev * volatility_factor
+
+        bid_price = round(adjusted_fair_value - spread / 2 + total_skew)
+        ask_price = round(adjusted_fair_value + spread / 2 + total_skew)
+
+        base_size = self.order_sizes[product]
+        adjusted_size = int(base_size * risk_multiplier)
+
+        if sunlight is not None:
+            if sunlight < CSI and sunlight_trend < 0:
+                buy_size = min(int(adjusted_size * 1.4), position_limit - position)
+                sell_size = min(int(adjusted_size * 0.6), position + position_limit)
+            elif sunlight > CSI and sunlight_trend > 0:
+                buy_size = min(int(adjusted_size * 0.6), position_limit - position)
+                sell_size = min(int(adjusted_size * 1.4), position + position_limit)
+            else:
+                buy_size = min(adjusted_size, position_limit - position)
+                sell_size = min(adjusted_size, position + position_limit)
+        else:
+            buy_size = min(adjusted_size, position_limit - position)
+            sell_size = min(adjusted_size, position + position_limit)
+
+        buy_size = int(buy_size)
+        sell_size = int(sell_size)
+
+        if buy_size > 0:
+            orders.append(Order(product, bid_price, buy_size))
+        if sell_size > 0:
+            orders.append(Order(product, ask_price, -sell_size))
+
+        return orders
+
+
+    def should_convert_macarons(self, state: TradingState) -> int:
+        product = "MAGNIFICENT_MACARONS"
+        position = state.position.get(product, 0)
+        max_conversions = 10
+        sunlight = (
+            state.observations.plainValueObservations.get("sunlight")
+            or getattr(state.observations.conversionObservations.get(product, None), "sunlightIndex", None)
+        )
+
+        if position > 65:
+            return -min(max_conversions, position - 50)
+        elif position < -65:
+            return min(max_conversions, 50 + position)
+
+        if product in state.order_depths:
+            depth = state.order_depths[product]
+            bids = sorted(depth.buy_orders.keys(), reverse=True)
+            asks = sorted(depth.sell_orders.keys())
+            if bids and asks:
+                best_bid = bids[0]
+                best_ask = asks[0]
+                mid_price = (best_bid + best_ask) / 2
+                base_threshold = max(5, mid_price * 0.01)
+                if sunlight is not None:
+                    CSI = 7.5
+                    if sunlight < CSI:
+                        base_threshold *= (1 + 0.25 * (CSI - sunlight))
+
+                if position > 30 and best_bid > best_ask + base_threshold:
+                    return -min(max_conversions, max(1, position // 10))
+                elif position < -30 and best_bid > best_ask + base_threshold * 1.5:
+                    return -min(max_conversions, 3)
+                elif position < 0 and best_ask < best_bid - base_threshold:
+                    return min(max_conversions, max(1, abs(position) // 10))
+                elif position > 0 and best_ask < best_bid - base_threshold * 1.5:
+                    return min(max_conversions, 3)
+
+        if sunlight is not None:
+            CSI = 7.5
+            if sunlight < CSI - 1.0 and position < 40:
+                return min(max_conversions, 6)
+            if sunlight > CSI + 1.2 and position > 20:
+                return -min(max_conversions, 6)
+
+        return 0
+
+    def update_ewma(self, new_value, old_mean, old_var, alpha):
+        """
+        Update Exponentially Weighted Moving Average for mean and variance
+        """
+        if old_mean is None:
+            return new_value, 1.0
+            
+        # Update mean
+        new_mean = alpha * new_value + (1 - alpha) * old_mean
+            
+        # Update variance
+        if old_var is None:
+            new_var = 1.0
+        else:
+            new_var = alpha * (new_value - old_mean) ** 2 + (1 - alpha) * old_var
+            
+        return new_mean, new_var
 
 
     

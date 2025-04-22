@@ -141,23 +141,11 @@ logger = Logger()
 class Trader:
     def __init__(self):
 
-    # RAINFOREST_RESIN parameters
+        # RAINFOREST_RESIN parameters
         self.resin_fair_value = 10000
 
         # DJEMBES parameters
         self.djembes_basket_history = []
-
-        # PICNIC_BASKET_1 parameters
-        # contain 6 croissants, 3 jams, 1 DJEMBES
-        self.picnic_basket_1_limit = 60
-
-        # PICNIC_BASKET_2 parameters
-        # contain 4 croissants, 2 jams
-        self.picnic_basket_2_limit = 100
-
-        # Conversion tracking
-        self.prev_timestamp = None
-        self.timeframe_data = {}
 
         # commodity parameters
         self.position_limits = {
@@ -176,7 +164,7 @@ class Trader:
         self.base_spreads = {
             "KELP": 1.3,
             "SQUID_INK": 1.1,
-            "JAMS": 1.5,
+            "JAMS": 1.3,
             'CROISSANTS': 1.3,
             "VOLCANIC_ROCK": 1.2,
             "VOLCANIC_ROCK_VOUCHER_9500": 1.2,
@@ -202,7 +190,7 @@ class Trader:
         self.momentum_factor = {
             "KELP": 0.1,
             "SQUID_INK": 0.65,
-            "JAMS": 0.5,
+            "JAMS": 0.3,
             'CROISSANTS': 0.25,
             "VOLCANIC_ROCK": 0.1,
             "VOLCANIC_ROCK_VOUCHER_9500": 0.2,
@@ -265,11 +253,6 @@ class Trader:
             "VOLCANIC_ROCK_VOUCHER_10000": [],
             "MAGNIFICENT_MACARONS": [],
         }
-        self.volatility_spread_multiplier = 1.7
-        self.lookback_window = 100
-        self.ewma_alpha = 0.2
-        self.rolling_window = 20
-        self.momentum_window = 5
         self.recent_spot_prices = {
             "VOLCANIC_ROCK": [0] * 3,
             "VOLCANIC_ROCK_VOUCHER_9500": [0] * 3,
@@ -277,7 +260,6 @@ class Trader:
             "VOLCANIC_ROCK_VOUCHER_10000": [0] * 3,
             "VOLCANIC_ROCK_VOUCHER_10250": [0] * 3,
             "VOLCANIC_ROCK_VOUCHER_10500": [0] * 3,
-            "MAGNIFICENT_MACARONS": [0] * 3,
         }
         self.time_to_expiry = 1.0  # scale 1.0 = start, 0.0 = expiry
         self.order_sizes = {

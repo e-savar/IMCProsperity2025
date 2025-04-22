@@ -656,58 +656,71 @@ class Trader:
     def picnic_basket_2_strategy(self, order_depth: OrderDepth, position: int, state: TradingState, timestamp: int) -> List[Order]:
         orders = []
         product = "PICNIC_BASKET2"
-        limit = 60
+        limit = 100
 
-        # === Get component mid-prices ===
-        def get_mid(symbol):
-            depth = state.order_depths[symbol]
-            if depth.buy_orders and depth.sell_orders:
-                return (max(depth.buy_orders) + min(depth.sell_orders)) / 2
-            return None
+        # === Helper: Calculate VWAP mid-price ===
+        def get_vwap(symbol: str):
+            depth = state.order_depths.get(symbol)
+            if not depth or not depth.buy_orders or not depth.sell_orders:
+                return None
+            buy_prices, buy_volumes = zip(*depth.buy_orders.items())
+            sell_prices, sell_volumes = zip(*depth.sell_orders.items())
+            vwap_bid = np.average(buy_prices, weights=buy_volumes)
+            vwap_ask = np.average(sell_prices, weights=sell_volumes)
+            return (vwap_bid + vwap_ask) / 2
 
-        croissant_mid = get_mid("CROISSANTS")
-        jam_mid = get_mid("JAMS")
+        croissant_price = get_vwap("CROISSANTS")
+        jam_price = get_vwap("JAMS")
 
-        if croissant_mid is None or jam_mid is None:
+        if croissant_price is None or jam_price is None:
             return []
 
-        # === Compute Fair Value of ETF ===
-        nav = (4 * croissant_mid + 2 * jam_mid)
-        fair_value = nav
+        # === Compute NAV and skewed fair value ===
+        nav = 4 * croissant_price + 2 * jam_price
+        inventory_skew = position / limit
+        fair_value = nav - 1.0 * inventory_skew  # Skew by position to avoid overexposure
 
-        # === Market making levels with depth filter ===
-        mm_bids = [
-            level for level, qty in order_depth.buy_orders.items() if qty >= 10
-        ]
-        mm_asks = [
-            level for level, qty in order_depth.sell_orders.items() if abs(qty) >= 10
-        ]
+        # === Identify best book levels with volume filters ===
+        def filter_book(book, min_qty=10):
+            return {p: q for p, q in book.items() if abs(q) >= min_qty}
 
-        if not mm_bids or not mm_asks:
+        bids = filter_book(order_depth.buy_orders)
+        asks = filter_book(order_depth.sell_orders)
+
+        if not bids or not asks:
             return []
 
-        best_bid = max(mm_bids)
-        best_ask = min(mm_asks)
+        best_bid = max(bids)
+        best_ask = min(asks)
 
-        # === Generate a directional signal ===
-        # Signal is "b" if ETF is underpriced, "s" if overpriced
-        signal = None
-        threshold = nav * 0.002  # 0.2% signal threshold
+        # === Core Strategy Logic ===
+        threshold = nav
+        latency_buffer = 1.0     # Buffer to avoid hitting ghost liquidity
 
-        if best_ask + threshold < fair_value:
-            signal = "b"
-        elif best_bid - threshold > fair_value:
-            signal = "s"
+        # Buy if ETF underpriced
+        if best_ask + latency_buffer < fair_value - threshold and position < limit:
+            vol = min(limit - position, asks[best_ask])
+            orders.append(Order(product, best_ask, vol))
 
-        # === Decide based on signal ===
-        if signal == "b":
-            target_volume = limit - position
-            if target_volume > 0:
-                orders.append(Order(product, best_ask, target_volume))
-        elif signal == "s":
-            target_volume = -limit - position
-            if target_volume < 0:
-                orders.append(Order(product, best_bid, target_volume))
+        # Sell if ETF overpriced
+        elif best_bid - latency_buffer > fair_value + threshold and position > -limit:
+            vol = min(position + limit, bids[best_bid])
+            orders.append(Order(product, best_bid, -vol))
+
+        else:
+            # === Market Making when no strong signal ===
+            spread = best_ask - best_bid
+            mm_bid = int(fair_value - spread / 2)
+            mm_ask = int(fair_value + spread / 2)
+
+            # Inventory-aware sizing
+            bid_vol = min(10, limit - position) if position < limit else 0
+            ask_vol = min(10, position + limit) if position > -limit else 0
+
+            if bid_vol > 0:
+                orders.append(Order(product, mm_bid, bid_vol))
+            if ask_vol > 0:
+                orders.append(Order(product, mm_ask, -ask_vol))
 
         return orders
 

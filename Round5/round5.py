@@ -1,4 +1,4 @@
-from datamodel import Listing, Observation, Order, OrderDepth, ProsperityEncoder, Symbol, Trade, TradingState
+from datamodel import Listing, Observation, Order, OrderDepth, ProsperityEncoder, Symbol, Trade, TradingState, OwnTrade
 from typing import List, Dict, Any
 import string
 import jsonpickle
@@ -283,15 +283,15 @@ class Trader:
         self.order_sizes = {
             "KELP": 15,
             "SQUID_INK": 10,
-            "VOLCANIC_ROCK": 25,
-            "VOLCANIC_ROCK_VOUCHER_9500": 20,
-            "VOLCANIC_ROCK_VOUCHER_9750": 20,
-            "VOLCANIC_ROCK_VOUCHER_10000": 20,
-            "VOLCANIC_ROCK_VOUCHER_10250": 20,
-            "VOLCANIC_ROCK_VOUCHER_10500": 15,
-            "JAMS": 25,
-            "CROISSANTS": 5,
-            "MAGNIFICENT_MACARONS": 5,
+            "VOLCANIC_ROCK": 10,
+            "VOLCANIC_ROCK_VOUCHER_9500": 10,
+            "VOLCANIC_ROCK_VOUCHER_9750": 10,
+            "VOLCANIC_ROCK_VOUCHER_10000": 10,
+            "VOLCANIC_ROCK_VOUCHER_10250": 10,
+            "VOLCANIC_ROCK_VOUCHER_10500": 10,
+            "JAMS": 10,
+            "CROISSANTS": 10,
+            "MAGNIFICENT_MACARONS": 10,
         }
         self.squid_ink_mid_history = []
         self.sunlight_history = []
@@ -304,6 +304,7 @@ class Trader:
         # Ticks remaining to prioritize CSI logic after a cross
         self.macaron_csi_mode_remaining = 0
         self.critical_sunlight_index = 9.5 # 9.5 is the critical sunlight index for the conversion
+
     
     def clear_position_order(self, orders: List[Order], order_depth: OrderDepth, position: int,
                              position_limit: int, product: str, buy_order_volume: int,
@@ -452,7 +453,7 @@ class Trader:
     def croissant_strategy(self, order_depth: OrderDepth, width: int, state: TradingState) -> List[Order]:
         orders: List[Order] = []
         product = "CROISSANTS"
-        fair_value = 4270  # Mean reversion center
+        fair_value = 4260  # Mean reversion center
         position_limit = 250
         position = state.position.get(product, 0)
         order_depth = state.order_depths[product]
@@ -505,6 +506,7 @@ class Trader:
                 orders.append(Order(product, passive_sell_price, -sell_qty))
 
         return orders
+    
     def squid_ink_rolling_avg_strategy(self, state: TradingState) -> List[Order]:
         orders = []
         product = "SQUID_INK"
@@ -894,8 +896,6 @@ class Trader:
                 position -= sell_qty
 
         return orders
-
-
     
     def calculate_price_volatility(self, product: str) -> float:
         """
@@ -914,6 +914,7 @@ class Trader:
         std_dev = variance ** 0.5
         
         return std_dev
+    
     def macaron_strategy(self, state: TradingState) -> List[Order]:
         orders: List[Order] = []
         product = "MAGNIFICENT_MACARONS"
@@ -1100,7 +1101,7 @@ class Trader:
         if "VOLCANIC_ROCK" in state.order_depths:
             result["VOLCANIC_ROCK"] = self.commodity_strategy("VOLCANIC_ROCK", state.order_depths["VOLCANIC_ROCK"], state)
         if "VOLCANIC_ROCK_VOUCHER_9500" in state.order_depths:
-            result["VOLCANIC_ROCK_VOUCHER_9500"] = self.commodity_strategy("VOLCANIC_ROCK_VOUCHER_9500", state.order_depths["VOLCANIC_ROCK_VOUCHER_9500"], state)
+            result["VOLCANIC_ROCK_VOUCHER_9500"] = self.premium_voucher_strategy("VOLCANIC_ROCK_VOUCHER_9500", 9500, state) # best out of 4 strats
         if "VOLCANIC_ROCK_VOUCHER_9750" in state.order_depths:
             result["VOLCANIC_ROCK_VOUCHER_9750"] = self.commodity_strategy("VOLCANIC_ROCK_VOUCHER_9750", state.order_depths["VOLCANIC_ROCK_VOUCHER_9750"], state)
         if "VOLCANIC_ROCK_VOUCHER_10000" in state.order_depths:
@@ -1110,14 +1111,14 @@ class Trader:
         if "VOLCANIC_ROCK_VOUCHER_10500" in state.order_depths:
             result["VOLCANIC_ROCK_VOUCHER_10500"] = self.volcanic_sniper("VOLCANIC_ROCK_VOUCHER_10500", 10500, state)
         
-        # Add the new MAGNIFICENT_MACARONS trading strategy
-        if "MAGNIFICENT_MACARONS" in state.order_depths:
-            result["MAGNIFICENT_MACARONS"] = self.macaron_strategy(state)
+        # # Add the new MAGNIFICENT_MACARONS trading strategy
+        # if "MAGNIFICENT_MACARONS" in state.order_depths:
+        #     result["MAGNIFICENT_MACARONS"] = self.macaron_strategy(state)
             
-            # Handle conversions for MAGNIFICENT_MACARONS
-            macarons_conversions = self.should_convert_macarons(state)
-            if macarons_conversions != 0:
-                conversions = macarons_conversions
+        #     # Handle conversions for MAGNIFICENT_MACARONS
+        #     macarons_conversions = self.should_convert_macarons(state)
+        #     if macarons_conversions != 0:
+        #         conversions = macarons_conversions
 
         trader_data = {
             "ewma_mean": getattr(self, "ewma_mean", {}),

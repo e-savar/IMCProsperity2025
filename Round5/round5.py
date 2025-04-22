@@ -304,6 +304,7 @@ class Trader:
         # Ticks remaining to prioritize CSI logic after a cross
         self.macaron_csi_mode_remaining = 0
         self.critical_sunlight_index = 9.5 # 9.5 is the critical sunlight index for the conversion
+        self.recent_counterparties = []
 
     
     def clear_position_order(self, orders: List[Order], order_depth: OrderDepth, position: int,
@@ -953,7 +954,7 @@ class Trader:
         self.last_prices[product].append(mid_price)
         if len(self.last_prices[product]) > momentum_window:
             self.last_prices[product].pop(0)
-        momentum = self.last_prices[product][-1] - self.last_prices[product][0]
+        momentum = self.last_prices[product][-1] - self.last_prices[product][0] if len(self.last_prices[product]) > 1 else 0
 
         # --- External Factors: Sunlight & Transport ---
         sunlight = (
@@ -965,7 +966,6 @@ class Trader:
             or getattr(state.observations.conversionObservations.get(product, None), "transportFees", None)
         )
 
-        # Update histories
         if sunlight is not None:
             self.sunlight_history.append(sunlight)
             self.sunlight_history = self.sunlight_history[-20:]
@@ -973,47 +973,96 @@ class Trader:
             self.transport_fees_history.append(transport_fees)
             self.transport_fees_history = self.transport_fees_history[-20:]
 
-        # --- Bias Fair Value ---
-        CSI = 50
-        sunlight_ma = np.mean(self.sunlight_history) if self.sunlight_history else sunlight
-        sunlight_bias = 0
-        if sunlight is not None:
-            sunlight_bias = 0.3 * (sunlight - CSI)
+        # --- Counterparty Activity Adaptation ---
+        recent_trades = state.own_trades.get(product, [])[-5:]  # Get last 5 trades for this product
 
-        if transport_fees is not None and len(self.transport_fees_history) >= 5:
-            avg_fee = sum(self.transport_fees_history[-5:]) / 5
-            fee_bias = 0.05 * (transport_fees - avg_fee)
-        else:
-            fee_bias = 0
+        # Extract counterparty information from recent trades
+        for t in recent_trades:
+            if t.buyer == "SUBMISSION" and t.seller:
+                self.recent_counterparties.append(t.seller)
+            elif t.seller == "SUBMISSION" and t.buyer:
+                self.recent_counterparties.append(t.buyer)
+
+        # Count frequency of each counterparty
+        counterparty_freq = {cp: self.recent_counterparties.count(cp) for cp in set(self.recent_counterparties)}
+
+        # Adapt strategy based on counterparty activity
+        ayumi_sami_active = any(cp in {"Ayumi", "Sami"} for cp in counterparty_freq)
+        boris_active = counterparty_freq.get("Boris", 0) >= 2
+
+        # Adjust fair value and position limits based on counterparties
+        if ayumi_sami_active:
+            fair_value -= 0.5  # Reduce fair value if Ayumi or Sami is active
+        if boris_active:
+            position_limit += 10  # Increase position limit if Boris is active
 
         # --- CSI KICKER ---
-        if sunlight_ma <= CSI:
-            qty = min(10, position_limit - position)
-            orders.append(Order(product, best_bid, qty))
-        elif sunlight_ma > CSI:
-            qty = min(10, position + position_limit)
-            orders.append(Order(product, best_ask, -qty))
+        CSI = 7.5  # Updated based on better estimate
+        sunlight_trend = 0
+        if len(self.sunlight_history) >= 5:
+            sunlight_trend = self.sunlight_history[-1] - self.sunlight_history[-5]
 
-        fair_value += sunlight_bias + fee_bias
+        sunlight_bias = 0
+        sunlight_multiplier = 1.0
+        if sunlight is not None:
+            sunlight_bias = 0.5 * (CSI - sunlight)
+            if sunlight < CSI:
+                below_factor = 1 + 0.3 * (CSI - sunlight) ** 2  # Stronger exponential
+                if sunlight_trend < 0:
+                    below_factor *= (1 + min(-sunlight_trend * 0.4, 0.8))  # Amplify more
+                sunlight_multiplier = below_factor
+                sunlight_bias *= 2.5  # Stronger base bias
+            else:
+                sunlight_bias *= 0.4
 
-        # --- Skew Based on Inventory and Momentum ---
-        inventory_skew = -0.5 * (position / position_limit) * std_dev
-        momentum_skew = 0.5 * (momentum / std_dev)
+        fee_bias = 0
+        if transport_fees is not None and len(self.transport_fees_history) >= 5:
+            avg_fee = sum(self.transport_fees_history[-5:]) / 5
+            fee_bias = 0.1 * (transport_fees - avg_fee)
+
+        adjusted_fair_value = fair_value + sunlight_bias + fee_bias
+
+        risk_multiplier = 1.0
+        if sunlight is not None:
+            if sunlight < CSI:
+                risk_multiplier = min(1.8, 1 + 0.25 * (CSI - sunlight))
+            else:
+                risk_multiplier = max(0.6, 1 - 0.07 * (sunlight - CSI))
+
+        inventory_skew = -0.8 * (position / position_limit) * std_dev
+        momentum_skew = 0.6 * (momentum / std_dev) * sunlight_multiplier
         total_skew = inventory_skew + momentum_skew
 
-        # --- Spread Control ---
         base_spread = self.base_spreads[product]
-        volatility_spread_multiplier = 3.5
-        spread = base_spread + std_dev * volatility_spread_multiplier
-        bid_price = round(fair_value - spread / 2 + total_skew)
-        ask_price = round(fair_value + spread / 2 + total_skew)
+        volatility_factor = 3
+        if sunlight is not None and sunlight < CSI:
+            volatility_factor *= min(1.8, 1 + 0.15 * (CSI - sunlight))
 
-        # --- Order Sizes: Encourage mean reversion ---
-        max_size = self.order_sizes[product]
-        buy_size = min(max_size, position_limit - position)
-        sell_size = min(max_size, position + position_limit)
+        spread = base_spread + std_dev * volatility_factor
 
-        # --- Execution ---
+        bid_price = round(adjusted_fair_value - spread / 2 + total_skew)
+        ask_price = round(adjusted_fair_value + spread / 2 + total_skew)
+
+        base_size = self.order_sizes[product]
+        adjusted_size = int(base_size * risk_multiplier)
+
+        if sunlight is not None:
+            if sunlight < CSI and sunlight_trend < 0:
+                buy_size = min(int(adjusted_size * 1.4), position_limit - position)
+                sell_size = min(int(adjusted_size * 0.6), position + position_limit)
+            elif sunlight > CSI and sunlight_trend > 0:
+                buy_size = min(int(adjusted_size * 0.6), position_limit - position)
+                sell_size = min(int(adjusted_size * 1.4), position + position_limit)
+            else:
+                buy_size = min(adjusted_size, position_limit - position)
+                sell_size = min(adjusted_size, position + position_limit)
+        else:
+            buy_size = min(adjusted_size, position_limit - position)
+            sell_size = min(adjusted_size, position + position_limit)
+
+        buy_size = int(buy_size)
+        sell_size = int(sell_size)
+
         if buy_size > 0:
             orders.append(Order(product, bid_price, buy_size))
         if sell_size > 0:
@@ -1081,6 +1130,7 @@ class Trader:
             self.transport_fees_history = trader_data.get("transport_fees_history", getattr(self, "transport_fees_history", []))
             self.export_tariff_history = trader_data.get("export_tariff_history", getattr(self, "export_tariff_history", []))
             self.import_tariff_history = trader_data.get("import_tariff_history", getattr(self, "import_tariff_history", []))
+            self.recent_counterparties = trader_data.get("recent_counterparties", getattr(self, "recent_counterparties", []))
 
         if "RAINFOREST_RESIN" in state.order_depths:
             result["RAINFOREST_RESIN"] = self.resin_strategy(state.order_depths["RAINFOREST_RESIN"], 2, state)
@@ -1119,14 +1169,14 @@ class Trader:
         if "VOLCANIC_ROCK_VOUCHER_10500" in state.order_depths:
             result["VOLCANIC_ROCK_VOUCHER_10500"] = self.volcanic_sniper("VOLCANIC_ROCK_VOUCHER_10500", 10500, state)
         
-        # # Add the new MAGNIFICENT_MACARONS trading strategy
-        # if "MAGNIFICENT_MACARONS" in state.order_depths:
-        #     result["MAGNIFICENT_MACARONS"] = self.macaron_strategy(state)
+        # Add the new MAGNIFICENT_MACARONS trading strategy
+        if "MAGNIFICENT_MACARONS" in state.order_depths:
+            result["MAGNIFICENT_MACARONS"] = self.macaron_strategy(state)
             
-        #     # Handle conversions for MAGNIFICENT_MACARONS
-        #     macarons_conversions = self.should_convert_macarons(state)
-        #     if macarons_conversions != 0:
-        #         conversions = macarons_conversions
+            # Handle conversions for MAGNIFICENT_MACARONS
+            macarons_conversions = self.should_convert_macarons(state)
+            if macarons_conversions != 0:
+                conversions = macarons_conversions
 
         trader_data = {
             "ewma_mean": getattr(self, "ewma_mean", {}),
@@ -1140,6 +1190,7 @@ class Trader:
             "transport_fees_history": getattr(self, "transport_fees_history", []),
             "export_tariff_history": getattr(self, "export_tariff_history", []),
             "import_tariff_history": getattr(self, "import_tariff_history", []),
+            "recent_counterparties": getattr(self, "recent_counterparties", []),
         }
         logger.flush(state, result, conversions, jsonpickle.encode(trader_data))
         # Return encoded trader data for state persistence

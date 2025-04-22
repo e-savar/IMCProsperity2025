@@ -135,29 +135,16 @@ class Logger:
 
         return out
 
-
 logger = Logger()
 
 class Trader:
     def __init__(self):
 
-    # RAINFOREST_RESIN parameters
+        # RAINFOREST_RESIN parameters
         self.resin_fair_value = 10000
 
         # DJEMBES parameters
         self.djembes_basket_history = []
-
-        # PICNIC_BASKET_1 parameters
-        # contain 6 croissants, 3 jams, 1 DJEMBES
-        self.picnic_basket_1_limit = 60
-
-        # PICNIC_BASKET_2 parameters
-        # contain 4 croissants, 2 jams
-        self.picnic_basket_2_limit = 100
-
-        # Conversion tracking
-        self.prev_timestamp = None
-        self.timeframe_data = {}
 
         # commodity parameters
         self.position_limits = {
@@ -265,11 +252,6 @@ class Trader:
             "VOLCANIC_ROCK_VOUCHER_10000": [],
             "MAGNIFICENT_MACARONS": [],
         }
-        self.volatility_spread_multiplier = 1.7
-        self.lookback_window = 100
-        self.ewma_alpha = 0.2
-        self.rolling_window = 20
-        self.momentum_window = 5
         self.recent_spot_prices = {
             "VOLCANIC_ROCK": [0] * 3,
             "VOLCANIC_ROCK_VOUCHER_9500": [0] * 3,
@@ -286,7 +268,7 @@ class Trader:
             "VOLCANIC_ROCK": 10,
             "VOLCANIC_ROCK_VOUCHER_9500": 10,
             "VOLCANIC_ROCK_VOUCHER_9750": 10,
-            "VOLCANIC_ROCK_VOUCHER_10000": 10,
+            "VOLCANIC_ROCK_VOUCHER_10000": 20,
             "VOLCANIC_ROCK_VOUCHER_10250": 10,
             "VOLCANIC_ROCK_VOUCHER_10500": 10,
             "JAMS": 10,
@@ -340,7 +322,6 @@ class Trader:
         new_var = (1 - alpha) * (current_var + alpha * delta * delta)
         return new_mean, new_var
     
-    # permanent
     def resin_strategy(self, order_depth: OrderDepth, width: int, state: TradingState) -> List[Order]:
         orders: List[Order] = []
         buy_order_volume = 0
@@ -1105,7 +1086,7 @@ class Trader:
                     
         # Default: no conversion
         return 0
-
+    
     def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
         result = {}
         conversions = 0
@@ -1159,13 +1140,13 @@ class Trader:
         if "VOLCANIC_ROCK" in state.order_depths:
             result["VOLCANIC_ROCK"] = self.commodity_strategy("VOLCANIC_ROCK", state.order_depths["VOLCANIC_ROCK"], state)
         if "VOLCANIC_ROCK_VOUCHER_9500" in state.order_depths:
-            result["VOLCANIC_ROCK_VOUCHER_9500"] = self.premium_voucher_strategy("VOLCANIC_ROCK_VOUCHER_9500", 9500, state) # best out of 4 strats
+            result["VOLCANIC_ROCK_VOUCHER_9500"] = self.premium_voucher_strategy("VOLCANIC_ROCK_VOUCHER_9500", 9500, state) # this is good
         if "VOLCANIC_ROCK_VOUCHER_9750" in state.order_depths:
             result["VOLCANIC_ROCK_VOUCHER_9750"] = self.commodity_strategy("VOLCANIC_ROCK_VOUCHER_9750", state.order_depths["VOLCANIC_ROCK_VOUCHER_9750"], state)
         if "VOLCANIC_ROCK_VOUCHER_10000" in state.order_depths:
-            result["VOLCANIC_ROCK_VOUCHER_10000"] = self.commodity_strategy("VOLCANIC_ROCK_VOUCHER_10000", state.order_depths["VOLCANIC_ROCK_VOUCHER_10000"], state)
+            result["VOLCANIC_ROCK_VOUCHER_10000"] = self.commodity_strategy("VOLCANIC_ROCK_VOUCHER_10000", state.order_depths["VOLCANIC_ROCK_VOUCHER_10000"], state) # this is good
         if "VOLCANIC_ROCK_VOUCHER_10250" in state.order_depths:
-            result["VOLCANIC_ROCK_VOUCHER_10250"] = self.premium_voucher_strategy("VOLCANIC_ROCK_VOUCHER_10250", 10250, state)
+            result["VOLCANIC_ROCK_VOUCHER_10250"] = self.premium_voucher_strategy("VOLCANIC_ROCK_VOUCHER_10250", 10250, state) # this is good
         if "VOLCANIC_ROCK_VOUCHER_10500" in state.order_depths:
             result["VOLCANIC_ROCK_VOUCHER_10500"] = self.volcanic_sniper("VOLCANIC_ROCK_VOUCHER_10500", 10500, state)
         

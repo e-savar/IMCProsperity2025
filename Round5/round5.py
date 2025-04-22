@@ -633,7 +633,7 @@ class Trader:
         djembe_ask = min(state.order_depths["DJEMBES"].sell_orders.keys())
         djembe_price = (djembe_ask + djembe_bid) / 2
 
-        fair_basket_price = (6 * croissant_price) + (3 * jam_price) + djembe_price
+        fair_basket_price = (6 * croissant_price) + (3 * jam_price) + djembe_price * 1.003
 
         # 2. Market data for basket
         best_ask = min(order_depth.sell_orders.keys())
@@ -684,7 +684,7 @@ class Trader:
         jam_ask = min(state.order_depths["JAMS"].sell_orders.keys())
         jam_price = (jam_ask + jam_bid) / 2
 
-        fair_basket_price = (4 * croissant_price) + (2 * jam_price)
+        fair_basket_price = (4 * croissant_price) + (2 * jam_price) * .997
 
         # 2. Market data for basket
         best_ask = min(order_depth.sell_orders.keys())

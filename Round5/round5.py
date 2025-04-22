@@ -675,43 +675,51 @@ class Trader:
     def picnic_basket_2_strategy(self, order_depth: OrderDepth, state: TradingState):
         orders = []
 
-        # === Step 1: Compute Fair Basket Price ===
-        croissant_best_bid = max(state.order_depths["CROISSANTS"].buy_orders.keys())
-        croissant_best_ask = min(state.order_depths["CROISSANTS"].sell_orders.keys())
-        croissant_price = (croissant_best_ask + croissant_best_bid) / 2
+        # 1. Fair price estimation for the basket
+        croissant_bid = max(state.order_depths["CROISSANTS"].buy_orders.keys())
+        croissant_ask = min(state.order_depths["CROISSANTS"].sell_orders.keys())
+        croissant_price = (croissant_ask + croissant_bid) / 2
 
-        jam_best_bid = max(state.order_depths["JAMS"].buy_orders.keys())
-        jam_best_ask = min(state.order_depths["JAMS"].sell_orders.keys())
-        jam_price = (jam_best_ask + jam_best_bid) / 2
+        jam_bid = max(state.order_depths["JAMS"].buy_orders.keys())
+        jam_ask = min(state.order_depths["JAMS"].sell_orders.keys())
+        jam_price = (jam_ask + jam_bid) / 2
 
-        # Modify these weights based on actual basket composition
-        expected_basket_price = (4 * croissant_price) + (2 * jam_price)
+        fair_basket_price = (4 * croissant_price) + (2 * jam_price)
 
-        # === Step 2: Active Trading Logic ===
+        # 2. Market data for basket
         best_ask = min(order_depth.sell_orders.keys())
         best_bid = max(order_depth.buy_orders.keys())
 
-        threshold = 0.0005  # 0.1% edge required to trade actively
-        quantity = 5       # Base quantity (dynamic logic added later)
+        position = state.position.get("PICNIC_BASKET2", 0)
+        position_limit = 60  # adjust if needed
 
-        if best_ask < expected_basket_price * (1 - threshold):
-            orders.append(Order("PICNIC_BASKET2", best_ask, quantity))
-        elif best_bid > expected_basket_price * (1 + threshold):
-            orders.append(Order("PICNIC_BASKET2", best_bid, -quantity))
+        threshold = 0.0005  # ~0.1%
+        max_aggressive_qty = 5
+        max_passive_qty = 2
 
-        # === Step 3: Passive Trading Logic ===
-        spread_pct = 0.002  # Spread is 0.1% of fair price
-        spread = expected_basket_price * spread_pct
+        # 3. Aggressive trades
+        if best_ask < fair_basket_price * (1 - threshold) and position + max_aggressive_qty <= position_limit:
+            orders.append(Order("PICNIC_BASKET2", best_ask, int(max_aggressive_qty)))
 
-        passive_buy_price = expected_basket_price - spread
-        passive_sell_price = expected_basket_price + spread
+        if best_bid > fair_basket_price * (1 + threshold) and position - max_aggressive_qty >= -position_limit:
+            orders.append(Order("PICNIC_BASKET2", best_bid, -int(max_aggressive_qty)))
 
-        # Use a small dynamic quantity for passive orders
-        passive_quantity = max(1, min(5, int(10 / (spread_pct * expected_basket_price))))
+        # 4. Passive orders
+        spread_pct = 0.0005
+        spread = fair_basket_price * spread_pct
 
-        # Convert prices to int (if tick size is 1)
-        orders.append(Order("PICNIC_BASKET2", int(passive_buy_price), passive_quantity))
-        orders.append(Order("PICNIC_BASKET2", int(passive_sell_price), -passive_quantity))
+        passive_buy_price = fair_basket_price - spread
+        passive_sell_price = fair_basket_price + spread
+
+        # Round prices if needed (comment out if prices can be floats)
+        passive_buy_price = round(passive_buy_price)
+        passive_sell_price = round(passive_sell_price)
+        passive_quantity = max(1, min(5, int(10 / (spread_pct * fair_basket_price))))
+        if position + max_passive_qty <= position_limit:
+            orders.append(Order("PICNIC_BASKET2", passive_buy_price, int(passive_quantity)))
+
+        if position - max_passive_qty >= -position_limit:
+            orders.append(Order("PICNIC_BASKET2", passive_sell_price, -int(passive_quantity)))
 
         return orders
 

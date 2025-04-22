@@ -1,4 +1,4 @@
-from datamodel import Listing, Observation, Order, OrderDepth, ProsperityEncoder, Symbol, Trade, TradingState, OwnTrade
+from datamodel import Listing, Observation, Order, OrderDepth, ProsperityEncoder, Symbol, Trade, TradingState
 from typing import List, Dict, Any
 import string
 import jsonpickle
@@ -642,7 +642,7 @@ class Trader:
         position = state.position.get("PICNIC_BASKET1", 0)
         position_limit = 60  # adjust if needed
 
-        threshold = 0.001  # ~0.1%
+        threshold = 0.0005  # ~0.1%
         max_aggressive_qty = 5
         max_passive_qty = 2
 

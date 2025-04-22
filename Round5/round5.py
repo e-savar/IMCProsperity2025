@@ -654,7 +654,7 @@ class Trader:
             orders.append(Order("PICNIC_BASKET1", best_bid, -int(max_aggressive_qty)))
 
         # 4. Passive orders
-        spread_pct = 0.001
+        spread_pct = 0.0005
         spread = fair_basket_price * spread_pct
 
         passive_buy_price = fair_basket_price - spread
